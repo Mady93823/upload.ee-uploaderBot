@@ -122,13 +122,17 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
         print(f"Processing image: {img_url}")
         
         # Add Referer to pass hotlink protection
+        # Do NOT set User-Agent manually when using impersonate, it causes conflicts/blocks
         headers = {
             "Referer": referer if referer else "https://codelist.cc/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-origin"
         }
 
-        print(f"Downloading image with headers: {headers['User-Agent']}")
+        print(f"Downloading image using curl_cffi impersonate...")
         
         # Retry with different impersonations if first attempt fails
         impersonations = ["chrome", "chrome120", "safari15_3", "okhttp"]
@@ -150,7 +154,9 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
                         success = True
                         break # Success!
                     else:
-                        print(f"Got {content_type}, retrying...")
+                        print(f"Got {content_type} instead of image, retrying...")
+                else:
+                    print(f"Status code {response.status_code}, retrying...")
                 
             except Exception as e:
                 print(f"Attempt failed: {e}")
