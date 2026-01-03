@@ -120,9 +120,24 @@ def process_and_save_image(img_url, work_dir):
             return None
             
         print(f"Processing image: {img_url}")
-        response = requests.get(img_url, stream=True, timeout=10, impersonate="chrome")
+        
+        # Add Referer to pass hotlink protection
+        headers = {
+            "Referer": "https://codelist.cc/",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+        }
+
+        response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
         response.raise_for_status()
         
+        # Debug info
+        content_type = response.headers.get('Content-Type', '')
+        # print(f"Image Content-Type: {content_type}")
+        
+        if 'text' in content_type or 'html' in content_type:
+            print(f"Warning: URL returned {content_type} instead of image. First 200 bytes: {response.content[:200]}")
+            return None
+            
         img = Image.open(io.BytesIO(response.content))
         width, height = img.size
         
