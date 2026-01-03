@@ -124,9 +124,15 @@ def process_and_save_image(img_url, work_dir):
         # Add Referer to pass hotlink protection
         headers = {
             "Referer": "https://codelist.cc/",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-origin"
         }
 
+        print(f"Downloading image with headers: {headers['User-Agent']}")
         response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
         response.raise_for_status()
         
