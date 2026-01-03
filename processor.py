@@ -180,7 +180,10 @@ def extract_metadata_from_codelist(url, work_dir=None):
         # Collect images from codelist.cc as fallback
         codelist_images = []
         for img in soup.find_all('img', src=True):
-            codelist_images.append(img['src'])
+            src = img['src'].strip()
+            # Clean up URL if it has spaces or newlines
+            if src:
+                codelist_images.append(src)
             
         # 2. Extract upload.ee link
         matches = re.findall(r'(https?://www\.upload\.ee/files/[^\s"<]+)', response.text)
@@ -244,6 +247,10 @@ def extract_metadata_from_codelist(url, work_dir=None):
                 if img_src.startswith('/'):
                     img_src = "https://codelist.cc" + img_src
                 
+                # Clean URL: remove any accidental concatenation or whitespace
+                img_src = img_src.split()[0]  # Take first part if spaces exist
+                img_src = img_src.strip()
+
                 # Look for the main post image, usually ends with .jpg or .png and is not a small icon
                 # Codelist usually puts the main image in the post body
                 if 'wp-content/uploads' in img_src or '/uploads/posts/' in img_src:
