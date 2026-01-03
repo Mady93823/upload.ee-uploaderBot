@@ -9,7 +9,7 @@ import rarfile
 import re
 from PIL import Image
 import io
-import cloudscraper
+from curl_cffi import requests
 
 # Configuration
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
@@ -73,32 +73,30 @@ def setup_tools():
         return None
 
 # Helper to create a robust scraper
-def create_robust_scraper():
-    return cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
+def get_scraper_session():
+    # curl_cffi requests doesn't need a session for simple gets, but we can use one
+    # to maintain headers/cookies if needed. For now we can just use requests directly
+    # with impersonate parameter.
+    return requests.Session()
 
 def download_file(url, dest_path, retries=3, progress_callback=None):
     print(f"Downloading {url}...")
-    scraper = create_robust_scraper()
     for attempt in range(retries):
         try:
-            with scraper.get(url, stream=True) as r:
-                r.raise_for_status()
-                total_size = int(r.headers.get('content-length', 0))
-                downloaded_size = 0
-                
-                with open(dest_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_size += len(chunk)
-                            if progress_callback and total_size > 0:
-                                progress_callback(downloaded_size, total_size)
+            # Using curl_cffi with impersonate
+            response = requests.get(url, stream=True, impersonate="chrome")
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded_size = 0
+            
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        if progress_callback and total_size > 0:
+                            progress_callback(downloaded_size, total_size)
             return True
         except Exception as e:
             print(f"Download attempt {attempt+1} failed: {e}")
@@ -106,9 +104,8 @@ def download_file(url, dest_path, retries=3, progress_callback=None):
     return False
 
 def get_direct_link(url):
-    scraper = create_robust_scraper()
     try:
-        response = scraper.get(url)
+        response = requests.get(url, impersonate="chrome")
         soup = BeautifulSoup(response.text, 'html.parser')
         for a in soup.find_all('a', href=True):
             if '/download/' in a['href']:
@@ -123,8 +120,7 @@ def process_and_save_image(img_url, work_dir):
             return None
             
         print(f"Processing image: {img_url}")
-        scraper = create_robust_scraper()
-        response = scraper.get(img_url, stream=True, timeout=10)
+        response = requests.get(img_url, stream=True, timeout=10, impersonate="chrome")
         response.raise_for_status()
         
         img = Image.open(io.BytesIO(response.content))
@@ -172,8 +168,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
     }
     
     try:
-        scraper = create_robust_scraper()
-        response = scraper.get(url)
+        response = requests.get(url, impersonate="chrome")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -219,7 +214,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
             
             # Scrape CodeCanyon for image
             try:
-                cc_response = scraper.get(codecanyon_url)
+                cc_response = requests.get(codecanyon_url, impersonate="chrome")
                 cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
                 
                 # Try finding the main preview image

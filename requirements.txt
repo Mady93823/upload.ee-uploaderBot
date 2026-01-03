@@ -6,4 +6,4 @@ rarfile
 python-dotenv
 motor
 Pillow
-cloudscraper
+curl-cffi
