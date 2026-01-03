@@ -11,3 +11,5 @@ work_*/
 test_run/
 tools/
 *.log
+*.session
+*.session-journal

@@ -363,36 +363,54 @@ def extract_metadata_from_codelist(url, work_dir=None):
                 cc_response = requests.get(codecanyon_url, impersonate="chrome120", headers=cc_headers)
                 cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
         
-                # Try finding the main preview image
+                candidates = []
+
                 # 1. Open Graph Image (Most reliable)
                 og_image = cc_soup.find('meta', property='og:image')
                 if og_image:
-                    metadata['image_url'] = og_image['content']
-                else:
-                    # 2. Look for specific Envato image classes
-                    # Try item-header__image
-                    header_img = cc_soup.find('img', class_='item-header__image')
-                    if header_img and header_img.get('src'):
-                         metadata['image_url'] = header_img['src']
-                    else:
-                        # 3. Fallback to scanning all images
-                        for img in cc_soup.find_all('img', src=True):
-                             src = img['src']
-                             if 'envatousercontent.com' in src and ('preview' in src or 'banner' in src):
-                                 metadata['image_url'] = src
-                                 break
-                             
-                # If we found an image on CodeCanyon, process it locally to crop it if needed
-                if metadata['image_url'] and work_dir:
-                     print(f"Found CodeCanyon image: {metadata['image_url']}, processing...")
-                     local_path = process_and_save_image(metadata['image_url'], work_dir, session=None, referer=codecanyon_url)
-                     if local_path:
-                         metadata['image_path'] = local_path
+                    candidates.append(og_image['content'])
+
+                # 2. Look for specific Envato image classes
+                header_img = cc_soup.find('img', class_='item-header__image')
+                if header_img and header_img.get('src'):
+                     candidates.append(header_img['src'])
+                
+                # 3. Scan all images for envatousercontent
+                for img in cc_soup.find_all('img', src=True):
+                     src = img['src']
+                     if 'envatousercontent.com' in src:
+                         # Exclude obviously small icons if possible by name
+                         if 'avatar' not in src and 'icon' not in src:
+                            candidates.append(src)
+                
+                # Remove duplicates while preserving order
+                unique_candidates = []
+                for c in candidates:
+                    if c not in unique_candidates:
+                        unique_candidates.append(c)
+                
+                candidates = unique_candidates
+                print(f"Found {len(candidates)} image candidates on CodeCanyon.")
+                
+                # Try candidates
+                for img_url in candidates:
+                     if work_dir:
+                         print(f"Processing candidate: {img_url}")
+                         local_path = process_and_save_image(img_url, work_dir, session=None, referer=codecanyon_url)
+                         if local_path:
+                             metadata['image_path'] = local_path
+                             metadata['image_url'] = img_url
+                             print(f"Success with CodeCanyon image: {local_path}")
+                             break
+                     else:
+                         metadata['image_url'] = img_url
+                         break
+
             except Exception as e:
                 print(f"Error scraping CodeCanyon: {e}")
 
-        # Fallback to codelist image if still no image
-        if not metadata['image_url'] and not metadata['image_path']:
+        # Fallback to codelist image if we don't have a valid processed image
+        if not metadata['image_path']:
             print("Trying fallback to Codelist images...")
             for img_src in codelist_images:
                 
