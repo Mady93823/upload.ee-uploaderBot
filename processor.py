@@ -72,9 +72,19 @@ def setup_tools():
         print("Failed to bootstrap 7-Zip.")
         return None
 
+# Helper to create a robust scraper
+def create_robust_scraper():
+    return cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+
 def download_file(url, dest_path, retries=3, progress_callback=None):
     print(f"Downloading {url}...")
-    scraper = cloudscraper.create_scraper()
+    scraper = create_robust_scraper()
     for attempt in range(retries):
         try:
             with scraper.get(url, stream=True) as r:
@@ -96,7 +106,7 @@ def download_file(url, dest_path, retries=3, progress_callback=None):
     return False
 
 def get_direct_link(url):
-    scraper = cloudscraper.create_scraper()
+    scraper = create_robust_scraper()
     try:
         response = scraper.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -113,7 +123,7 @@ def process_and_save_image(img_url, work_dir):
             return None
             
         print(f"Processing image: {img_url}")
-        scraper = cloudscraper.create_scraper()
+        scraper = create_robust_scraper()
         response = scraper.get(img_url, stream=True, timeout=10)
         response.raise_for_status()
         
@@ -162,7 +172,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
     }
     
     try:
-        scraper = cloudscraper.create_scraper()
+        scraper = create_robust_scraper()
         response = scraper.get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
