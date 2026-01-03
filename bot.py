@@ -400,10 +400,9 @@ async def handle_message(client, message):
                                 caption=caption,
                                 reply_markup=keyboard
                             )
-                        elif image_url:
-                            # Even if local processing failed, we send the URL.
-                            # We've tried our best to clean it. If it still has a watermark,
-                            # it's better than no image at all, per user request to have "cool" posts.
+                        elif image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
+                            # Only send the fallback URL if it's NOT from codelist (e.g. CodeCanyon)
+                            # This ensures we never show the watermarked image if local processing failed.
                             await client.send_photo(
                                 chat_id=CHANNEL_ID,
                                 photo=image_url,
@@ -411,6 +410,7 @@ async def handle_message(client, message):
                                 reply_markup=keyboard
                             )
                         else:
+                            # Fallback to text-only if we can't get a clean image
                             await client.send_message(
                                 chat_id=CHANNEL_ID,
                                 text=caption,
