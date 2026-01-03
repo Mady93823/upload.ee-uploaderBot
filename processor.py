@@ -239,14 +239,12 @@ def extract_metadata_from_codelist(url, work_dir=None):
         og_image = soup.find('meta', property='og:image')
         if og_image and og_image.get('content'):
             img_url = og_image['content']
+            metadata['image_url'] = img_url # Set URL immediately as fallback
             if work_dir:
                  print(f"Found og:image: {img_url}, processing...")
                  local_path = process_and_save_image(img_url, work_dir, session, referer=url)
                  if local_path:
                      metadata['image_path'] = local_path
-                     metadata['image_url'] = img_url
-            else:
-                 metadata['image_url'] = img_url
             
         # Collect images from codelist.cc as fallback
         codelist_images = []
@@ -336,6 +334,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
                         local_path = process_and_save_image(img_src, work_dir, session, referer=url)
                         if local_path:
                             metadata['image_path'] = local_path
+                            metadata['image_url'] = img_src # Ensure we have the URL too
                             print(f"Using processed Codelist image: {local_path}")
                             break
                     else:
