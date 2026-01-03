@@ -1,0 +1,8 @@
+pyrogram
+tgcrypto
+requests
+beautifulsoup4
+rarfile
+python-dotenv
+motor
+Pillow
