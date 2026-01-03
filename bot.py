@@ -411,7 +411,8 @@ async def handle_message(client, message):
                             await client.send_message(
                                 chat_id=CHANNEL_ID,
                                 text=caption,
-                                reply_markup=keyboard
+                                reply_markup=keyboard,
+                                disable_web_page_preview=True
                             )
                             
                         # Removed: await client.send_document(...) - No longer sending file directly

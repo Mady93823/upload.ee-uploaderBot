@@ -114,7 +114,7 @@ def get_direct_link(url):
         print(f"Error fetching page: {e}")
     return None
 
-def process_and_save_image(img_url, work_dir, session=None):
+def process_and_save_image(img_url, work_dir, session=None, referer=None):
     try:
         if not work_dir:
             return None
@@ -123,17 +123,14 @@ def process_and_save_image(img_url, work_dir, session=None):
         
         # Add Referer to pass hotlink protection
         headers = {
-            "Referer": "https://codelist.cc/",
+            "Referer": referer if referer else "https://codelist.cc/",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Fetch-Dest": "image",
-            "Sec-Fetch-Mode": "no-cors",
-            "Sec-Fetch-Site": "same-origin"
         }
 
         print(f"Downloading image with headers: {headers['User-Agent']}")
         if session:
+            # Update session headers temporarily
             response = session.get(img_url, stream=True, timeout=15, headers=headers)
         else:
              response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
@@ -142,13 +139,20 @@ def process_and_save_image(img_url, work_dir, session=None):
         
         # Debug info
         content_type = response.headers.get('Content-Type', '')
-        # print(f"Image Content-Type: {content_type}")
         
-        if 'text' in content_type or 'html' in content_type:
+        # Strict check: If it's definitely text/html, reject it.
+        if 'text' in content_type.lower() or 'html' in content_type.lower():
             print(f"Warning: URL returned {content_type} instead of image. First 200 bytes: {response.content[:200]}")
             return None
             
-        img = Image.open(io.BytesIO(response.content))
+        try:
+            img = Image.open(io.BytesIO(response.content))
+            img.verify() # Verify it's actually an image
+            img = Image.open(io.BytesIO(response.content)) # Re-open after verify
+        except Exception as img_e:
+             print(f"Invalid image content received. First 200 bytes: {response.content[:200]}")
+             return None
+
         width, height = img.size
         
         # Filter small images (icons, logos)
@@ -283,7 +287,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
                 # Codelist usually puts the main image in the post body
                 if 'wp-content/uploads' in img_src or '/uploads/posts/' in img_src:
                     if work_dir:
-                        local_path = process_and_save_image(img_src, work_dir, session)
+                        local_path = process_and_save_image(img_src, work_dir, session, referer=url)
                         if local_path:
                             metadata['image_path'] = local_path
                             print(f"Using processed Codelist image: {local_path}")
