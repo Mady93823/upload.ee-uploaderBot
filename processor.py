@@ -129,11 +129,30 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
         }
 
         print(f"Downloading image with headers: {headers['User-Agent']}")
-        if session:
-            # Update session headers temporarily
-            response = session.get(img_url, stream=True, timeout=15, headers=headers)
-        else:
-             response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
+        
+        # Retry with different impersonations if first attempt fails
+        impersonations = ["chrome", "chrome110", "safari15_3"]
+        
+        for imp in impersonations:
+            try:
+                print(f"Attempting download with impersonate='{imp}'...")
+                if session:
+                    # Update session headers temporarily
+                    response = session.get(img_url, stream=True, timeout=15, headers=headers, impersonate=imp)
+                else:
+                     response = requests.get(img_url, stream=True, timeout=15, impersonate=imp, headers=headers)
+                
+                if response.status_code == 200:
+                    # Check content type
+                    content_type = response.headers.get('Content-Type', '').lower()
+                    if 'image' in content_type:
+                        break # Success!
+                    else:
+                        print(f"Got {content_type}, retrying...")
+                
+            except Exception as e:
+                print(f"Attempt failed: {e}")
+                time.sleep(1)
              
         response.raise_for_status()
         
@@ -208,6 +227,11 @@ def extract_metadata_from_codelist(url, work_dir=None):
         title_tag = soup.find('h1', class_='entry-title')
         if title_tag:
             metadata['title'] = title_tag.get_text(strip=True)
+            
+        # 1b. Try to get og:image from Codelist first (often the main post image)
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            metadata['image_url'] = og_image['content']
             
         # Collect images from codelist.cc as fallback
         codelist_images = []
