@@ -4,6 +4,8 @@ import asyncio
 import time
 import shutil
 import secrets
+import psutil
+import platform
 import motor.motor_asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -18,6 +20,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+BOT_START_TIME = time.time()
 
 # Configuration from env
 TOKEN = os.getenv("TOKEN")
@@ -299,9 +303,63 @@ import concurrent.futures
 # Thread pool for blocking I/O
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
+# --- Stats Command ---
+def get_size(bytes, suffix="B"):
+    factor = 1024
+    for unit in ["", "K", "M", "G", "T", "P"]:
+        if bytes < factor:
+            return f"{bytes:.2f}{unit}{suffix}"
+        bytes /= factor
+
+@app.on_message(filters.command("stats"))
+async def stats_command(client, message):
+    # System Stats
+    uname = platform.uname()
+    os_info = f"{uname.system} {uname.release}"
+    
+    cpu_usage = psutil.cpu_percent(interval=0.1)
+    
+    # RAM
+    svmem = psutil.virtual_memory()
+    ram_total = get_size(svmem.total)
+    ram_used = get_size(svmem.used)
+    ram_percent = svmem.percent
+    
+    # Disk
+    partition_usage = psutil.disk_usage('/')
+    disk_total = get_size(partition_usage.total)
+    disk_used = get_size(partition_usage.used)
+    disk_percent = partition_usage.percent
+    
+    # Uptime
+    current_time = time.time()
+    uptime_seconds = int(current_time - BOT_START_TIME)
+    uptime_str = time.strftime("%Hh %Mm %Ss", time.gmtime(uptime_seconds))
+    
+    # Process specific
+    process = psutil.Process(os.getpid())
+    memory_usage = process.memory_info().rss / 1024 / 1024  # MB
+    
+    stats_text = (
+        f"📊 **System Status**\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🖥 **OS**: `{os_info}`\n"
+        f"⚙️ **CPU**: `{cpu_usage}%`\n"
+        f"🧠 **RAM**: `{ram_used} / {ram_total} ({ram_percent}%)`\n"
+        f"💾 **Disk**: `{disk_used} / {disk_total} ({disk_percent}%)`\n"
+        f"🐍 **Python**: `{platform.python_version()}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 **Bot Status**\n"
+        f"⏱ **Uptime**: `{uptime_str}`\n"
+        f"📦 **Memory**: `{memory_usage:.2f} MB`\n"
+        f"🆔 **PID**: `{process.pid}`"
+    )
+    
+    await message.reply_text(stats_text)
+
 # --- Main Logic ---
 
-@app.on_message(filters.text & ~filters.command(["start", "settings"]))
+@app.on_message(filters.text & ~filters.command(["start", "settings", "stats"]))
 async def handle_message(client, message):
     url = message.text.strip()
     

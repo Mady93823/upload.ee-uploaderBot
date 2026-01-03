@@ -151,8 +151,12 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
                     # Check content type
                     content_type = response.headers.get('Content-Type', '').lower()
                     if 'image' in content_type:
-                        success = True
-                        break # Success!
+                        # Verify we actually have content
+                        if response.content and len(response.content) > 0:
+                            success = True
+                            break # Success!
+                        else:
+                            print("Got empty body despite 200 OK, retrying...")
                     else:
                         print(f"Got {content_type} instead of image, retrying...")
                 else:
