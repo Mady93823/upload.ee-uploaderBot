@@ -175,24 +175,28 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
         width, height = img.size
         
         # Filter small images (icons, logos)
-        if width < 300 or height < 300:
+        # Relaxed logic to allow banners that might be short in height
+        if width < 250 or height < 150:
             print(f"Skipping small image ({width}x{height})")
             return None
             
         # Crop bottom part (watermark)
         # Only crop if image is reasonably tall to avoid destroying it
         # Increased crop pixels to ensure logo removal
-        crop_pixels = 65 
-        if height > 350: 
+        
+        # Standard Codelist watermark area seems to be around 60-80px
+        if height > 400:
+             crop_pixels = 85
+        elif height > 300: 
+             crop_pixels = 70
+        else:
+             # Smaller crop for smaller images
+             crop_pixels = 45
+             
+        if height > (crop_pixels + 50): # Ensure we have enough image left
             new_height = height - crop_pixels
             img = img.crop((0, 0, width, new_height))
             print(f"Cropped {crop_pixels}px from bottom. New size: {width}x{new_height}")
-        elif height > 280:
-             # Smaller crop for smaller images
-             crop_pixels = 40
-             new_height = height - crop_pixels
-             img = img.crop((0, 0, width, new_height))
-             print(f"Cropped {crop_pixels}px from bottom (small image). New size: {width}x{new_height}")
         
         # Save to work_dir
         if not os.path.exists(work_dir):
