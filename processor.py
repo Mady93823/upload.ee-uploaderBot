@@ -114,7 +114,7 @@ def get_direct_link(url):
         print(f"Error fetching page: {e}")
     return None
 
-def process_and_save_image(img_url, work_dir):
+def process_and_save_image(img_url, work_dir, session=None):
     try:
         if not work_dir:
             return None
@@ -133,7 +133,11 @@ def process_and_save_image(img_url, work_dir):
         }
 
         print(f"Downloading image with headers: {headers['User-Agent']}")
-        response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
+        if session:
+            response = session.get(img_url, stream=True, timeout=15, headers=headers)
+        else:
+             response = requests.get(img_url, stream=True, timeout=15, impersonate="chrome", headers=headers)
+             
         response.raise_for_status()
         
         # Debug info
@@ -188,8 +192,11 @@ def extract_metadata_from_codelist(url, work_dir=None):
         'upload_ee_url': None
     }
     
+    # Use a session to persist cookies/clearance
+    session = requests.Session()
+    
     try:
-        response = requests.get(url, impersonate="chrome")
+        response = session.get(url, impersonate="chrome")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -276,7 +283,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
                 # Codelist usually puts the main image in the post body
                 if 'wp-content/uploads' in img_src or '/uploads/posts/' in img_src:
                     if work_dir:
-                        local_path = process_and_save_image(img_src, work_dir)
+                        local_path = process_and_save_image(img_src, work_dir, session)
                         if local_path:
                             metadata['image_path'] = local_path
                             print(f"Using processed Codelist image: {local_path}")
