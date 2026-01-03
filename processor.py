@@ -182,16 +182,18 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
             
         # Crop bottom part (watermark)
         # Only crop if image is reasonably tall to avoid destroying it
-        # Increased crop pixels to ensure logo removal
+        # Increased crop pixels to ensure logo removal (Aggressive mode)
         
-        # Standard Codelist watermark area seems to be around 60-80px
-        if height > 400:
-             crop_pixels = 85
+        # Standard Codelist watermark area seems to be around 60-80px but can be larger
+        if height > 500:
+             crop_pixels = 130
+        elif height > 400:
+             crop_pixels = 110
         elif height > 300: 
-             crop_pixels = 70
+             crop_pixels = 90
         else:
              # Smaller crop for smaller images
-             crop_pixels = 45
+             crop_pixels = 60
              
         if height > (crop_pixels + 50): # Ensure we have enough image left
             new_height = height - crop_pixels
