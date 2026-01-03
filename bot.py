@@ -401,25 +401,15 @@ async def handle_message(client, message):
                                 reply_markup=keyboard
                             )
                         elif image_url:
-                            # If we failed to process the local image (image_path is None),
-                            # check if the fallback URL is from codelist.cc.
-                            # If so, it likely has a watermark we wanted to hide.
-                            # In this case, it's better to send NO image than a watermarked one.
-                            if "codelist.cc" in image_url or "codelist.cc" in (metadata.get('original_url') or ""):
-                                # Send text only
-                                await client.send_message(
-                                    chat_id=CHANNEL_ID,
-                                    text=caption,
-                                    reply_markup=keyboard,
-                                    disable_web_page_preview=True
-                                )
-                            else:
-                                await client.send_photo(
-                                    chat_id=CHANNEL_ID,
-                                    photo=image_url,
-                                    caption=caption,
-                                    reply_markup=keyboard
-                                )
+                            # Even if local processing failed, we send the URL.
+                            # We've tried our best to clean it. If it still has a watermark,
+                            # it's better than no image at all, per user request to have "cool" posts.
+                            await client.send_photo(
+                                chat_id=CHANNEL_ID,
+                                photo=image_url,
+                                caption=caption,
+                                reply_markup=keyboard
+                            )
                         else:
                             await client.send_message(
                                 chat_id=CHANNEL_ID,

@@ -163,26 +163,72 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
                 time.sleep(1)
         
         if not success:
-            print("All download attempts failed.")
-            return None
-             
-        response.raise_for_status()
-        
-        # Debug info
-        content_type = response.headers.get('Content-Type', '')
-        
-        # Strict check: If it's definitely text/html, reject it.
-        if 'text' in content_type.lower() or 'html' in content_type.lower():
-            print(f"Warning: URL returned {content_type} instead of image. First 200 bytes: {response.content[:200]}")
-            return None
-            
-        try:
-            img = Image.open(io.BytesIO(response.content))
-            img.verify() # Verify it's actually an image
-            img = Image.open(io.BytesIO(response.content)) # Re-open after verify
-        except Exception as img_e:
-             print(f"Invalid image content received. First 200 bytes: {response.content[:200]}")
+            print("Python download attempts failed. Trying fallback to system curl...")
+            try:
+                # Fallback to system curl
+                if not os.path.exists(work_dir):
+                    os.makedirs(work_dir)
+                
+                filename = f"cover_{int(time.time())}.jpg"
+                save_path = os.path.join(work_dir, filename)
+                
+                cmd = [
+                    "curl", "-L",
+                    "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "-H", f"Referer: {referer if referer else 'https://codelist.cc/'}",
+                    "--connect-timeout", "15",
+                    "--max-time", "30",
+                    "--output", save_path,
+                    img_url
+                ]
+                
+                print(f"Running curl: {' '.join(cmd)}")
+                subprocess.run(cmd, check=True, capture_output=True)
+                
+                if os.path.exists(save_path) and os.path.getsize(save_path) > 1000:
+                    print("Curl download successful!")
+                    # Verify it's an image
+                    try:
+                        img = Image.open(save_path)
+                        img.verify() # Check integrity
+                        img = Image.open(save_path) # Reopen for processing
+                        
+                        # Use this image for the rest of processing
+                        success = True
+                    except Exception as e:
+                        print(f"Curl downloaded file is not a valid image: {e}")
+                        os.remove(save_path)
+                        return None
+                else:
+                    print("Curl failed or file too small.")
+                    return None
+                    
+            except Exception as e:
+                print(f"Curl fallback failed: {e}")
+                return None
+
+        if not success:
+             print("All download attempts failed.")
              return None
+             
+        if 'img' not in locals():
+            response.raise_for_status()
+            
+            # Debug info
+            content_type = response.headers.get('Content-Type', '')
+            
+            # Strict check: If it's definitely text/html, reject it.
+            if 'text' in content_type.lower() or 'html' in content_type.lower():
+                print(f"Warning: URL returned {content_type} instead of image. First 200 bytes: {response.content[:200]}")
+                return None
+                
+            try:
+                img = Image.open(io.BytesIO(response.content))
+                img.verify() # Verify it's actually an image
+                img = Image.open(io.BytesIO(response.content)) # Re-open after verify
+            except Exception as img_e:
+                 print(f"Invalid image content received. First 200 bytes: {response.content[:200]}")
+                 return None
 
         width, height = img.size
         
@@ -304,24 +350,33 @@ def extract_metadata_from_codelist(url, work_dir=None):
             
             # Scrape CodeCanyon for image
             try:
-                cc_response = requests.get(codecanyon_url, impersonate="chrome")
+                # Add headers for CodeCanyon
+                cc_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9"
+                }
+                cc_response = requests.get(codecanyon_url, impersonate="chrome120", headers=cc_headers)
                 cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
-                
+        
                 # Try finding the main preview image
-                # Often it's in a meta tag or specific img class
-                # Example: <img ... class="item-header__image" ... src="...">
-                # Or og:image
-                
+                # 1. Open Graph Image (Most reliable)
                 og_image = cc_soup.find('meta', property='og:image')
                 if og_image:
                     metadata['image_url'] = og_image['content']
                 else:
-                    # Fallback to looking for img tags with specific patterns
-                    # The user gave an example: https://market-resized.envatousercontent.com/...
-                    for img in cc_soup.find_all('img', src=True):
-                         if 'envatousercontent.com' in img['src'] and 'preview' in img['src'] or 'banner' in img['src']:
-                             metadata['image_url'] = img['src']
-                             break
+                    # 2. Look for specific Envato image classes
+                    # Try item-header__image
+                    header_img = cc_soup.find('img', class_='item-header__image')
+                    if header_img and header_img.get('src'):
+                         metadata['image_url'] = header_img['src']
+                    else:
+                        # 3. Fallback to scanning all images
+                        for img in cc_soup.find_all('img', src=True):
+                             src = img['src']
+                             if 'envatousercontent.com' in src and ('preview' in src or 'banner' in src):
+                                 metadata['image_url'] = src
+                                 break
                              
                 # If we found an image on CodeCanyon, process it locally to crop it if needed
                 if metadata['image_url'] and work_dir:
