@@ -344,29 +344,43 @@ def process_upload_ee_url(url, work_dir, progress_callback=None, add_copyright=F
         raise Exception("Download failed.")
         
     # 3. Extract
-    seven_zip = setup_tools()
-    if not seven_zip:
-        raise Exception("7-Zip tool missing. Cannot extract.")
-        
     print(f"Extracting {rar_path}...")
-    # Add -p- to assume no password if not provided
-    cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y', '-p-']
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if res.returncode != 0:
-        error_msg = res.stderr.decode('utf-8', errors='ignore')
-        print(f"Extraction error: {error_msg}")
-        
-        # Fallback: Try unrar if 7z failed (sometimes 7z struggles with specific RAR versions on Linux)
-        if shutil.which('unrar'):
-            print("Trying fallback to unrar...")
-            cmd_unrar = ['unrar', 'x', '-y', '-p-', rar_path, extract_dir]
-            res_unrar = subprocess.run(cmd_unrar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if res_unrar.returncode == 0:
-                print("Unrar fallback successful.")
-            else:
-                 raise Exception(f"Extraction failed: {error_msg}")
+    extraction_success = False
+    error_msg = ""
+    
+    # Priority 1: Try unrar first (most reliable for RAR5/proprietary formats)
+    if shutil.which('unrar'):
+        print("Using unrar...")
+        # unrar x -y -p- <file> <dest>
+        cmd_unrar = ['unrar', 'x', '-y', '-p-', rar_path, extract_dir]
+        res_unrar = subprocess.run(cmd_unrar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res_unrar.returncode == 0:
+            extraction_success = True
+            print("Unrar successful.")
         else:
-             raise Exception(f"Extraction failed: {error_msg}")
+            error_msg = res_unrar.stderr.decode('utf-8', errors='ignore')
+            print(f"Unrar failed: {error_msg}")
+    
+    # Priority 2: Try 7-Zip if unrar failed or is missing
+    if not extraction_success:
+        seven_zip = setup_tools()
+        if seven_zip:
+            print(f"Using {seven_zip}...")
+            # 7z x <file> -o<dest> -y -p-
+            cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y', '-p-']
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode == 0:
+                extraction_success = True
+                print("7-Zip extraction successful.")
+            else:
+                current_err = res.stderr.decode('utf-8', errors='ignore')
+                error_msg += f" | 7-Zip failed: {current_err}"
+                print(f"7-Zip extraction failed: {current_err}")
+        else:
+             error_msg += " | 7-Zip tool missing."
+             
+    if not extraction_success:
+        raise Exception(f"Extraction failed. Ensure 'unrar' or 'p7zip-rar' is installed. Details: {error_msg}")
         
     # 4. Clean
     clean_files(extract_dir)
