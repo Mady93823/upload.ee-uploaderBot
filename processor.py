@@ -248,14 +248,14 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
         
         # Standard Codelist watermark area seems to be around 60-80px but can be larger
         if height > 500:
-            crop_pixels = 130
-        elif height > 400:
             crop_pixels = 110
-        elif height >= 300: 
+        elif height > 400:
             crop_pixels = 90
+        elif height >= 300: 
+            crop_pixels = 70
         else:
             # Smaller crop for smaller images
-            crop_pixels = 70
+            crop_pixels = 65
              
         if height > (crop_pixels + 50): # Ensure we have enough image left
             new_height = height - crop_pixels
