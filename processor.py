@@ -179,13 +179,20 @@ def process_and_save_image(img_url, work_dir, session=None, referer=None):
             print(f"Skipping small image ({width}x{height})")
             return None
             
-        # Crop bottom 50px (watermark)
+        # Crop bottom part (watermark)
         # Only crop if image is reasonably tall to avoid destroying it
-        crop_pixels = 50
-        if height > 280: 
+        # Increased crop pixels to ensure logo removal
+        crop_pixels = 65 
+        if height > 350: 
             new_height = height - crop_pixels
             img = img.crop((0, 0, width, new_height))
             print(f"Cropped {crop_pixels}px from bottom. New size: {width}x{new_height}")
+        elif height > 280:
+             # Smaller crop for smaller images
+             crop_pixels = 40
+             new_height = height - crop_pixels
+             img = img.crop((0, 0, width, new_height))
+             print(f"Cropped {crop_pixels}px from bottom (small image). New size: {width}x{new_height}")
         
         # Save to work_dir
         if not os.path.exists(work_dir):
