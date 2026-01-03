@@ -349,10 +349,24 @@ def process_upload_ee_url(url, work_dir, progress_callback=None, add_copyright=F
         raise Exception("7-Zip tool missing. Cannot extract.")
         
     print(f"Extracting {rar_path}...")
-    cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y']
+    # Add -p- to assume no password if not provided
+    cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y', '-p-']
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
-        raise Exception(f"Extraction failed: {res.stderr.decode('utf-8', errors='ignore')}")
+        error_msg = res.stderr.decode('utf-8', errors='ignore')
+        print(f"Extraction error: {error_msg}")
+        
+        # Fallback: Try unrar if 7z failed (sometimes 7z struggles with specific RAR versions on Linux)
+        if shutil.which('unrar'):
+            print("Trying fallback to unrar...")
+            cmd_unrar = ['unrar', 'x', '-y', '-p-', rar_path, extract_dir]
+            res_unrar = subprocess.run(cmd_unrar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res_unrar.returncode == 0:
+                print("Unrar fallback successful.")
+            else:
+                 raise Exception(f"Extraction failed: {error_msg}")
+        else:
+             raise Exception(f"Extraction failed: {error_msg}")
         
     # 4. Clean
     clean_files(extract_dir)
