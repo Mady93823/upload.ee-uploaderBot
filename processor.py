@@ -9,6 +9,7 @@ import rarfile
 import re
 from PIL import Image
 import io
+import cloudscraper
 
 # Configuration
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
@@ -73,10 +74,10 @@ def setup_tools():
 
 def download_file(url, dest_path, retries=3, progress_callback=None):
     print(f"Downloading {url}...")
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    scraper = cloudscraper.create_scraper()
     for attempt in range(retries):
         try:
-            with requests.get(url, stream=True, headers=headers) as r:
+            with scraper.get(url, stream=True) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 downloaded_size = 0
@@ -95,9 +96,9 @@ def download_file(url, dest_path, retries=3, progress_callback=None):
     return False
 
 def get_direct_link(url):
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    scraper = cloudscraper.create_scraper()
     try:
-        response = requests.get(url, headers=headers)
+        response = scraper.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
         for a in soup.find_all('a', href=True):
             if '/download/' in a['href']:
@@ -112,8 +113,8 @@ def process_and_save_image(img_url, work_dir):
             return None
             
         print(f"Processing image: {img_url}")
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        response = requests.get(img_url, headers=headers, stream=True, timeout=10)
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(img_url, stream=True, timeout=10)
         response.raise_for_status()
         
         img = Image.open(io.BytesIO(response.content))
@@ -151,9 +152,7 @@ def process_and_save_image(img_url, work_dir):
 
 def extract_metadata_from_codelist(url, work_dir=None):
     print(f"Scraping metadata from {url}...")
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    
     metadata = {
         'title': None,
         'image_url': None,
@@ -163,7 +162,8 @@ def extract_metadata_from_codelist(url, work_dir=None):
     }
     
     try:
-        response = requests.get(url, headers=headers)
+        scraper = cloudscraper.create_scraper()
+        response = scraper.get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -209,7 +209,7 @@ def extract_metadata_from_codelist(url, work_dir=None):
             
             # Scrape CodeCanyon for image
             try:
-                cc_response = requests.get(codecanyon_url, headers=headers)
+                cc_response = scraper.get(codecanyon_url)
                 cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
                 
                 # Try finding the main preview image
