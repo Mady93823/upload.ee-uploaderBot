@@ -740,38 +740,43 @@ def process_archive(rar_path, work_dir, add_copyright=False):
 
 def process_url(url, work_dir, progress_callback=None, add_copyright=False):
     metadata = None
+    zip_path = None
     
     # Determine if it's a codelist URL
     if "codelist.cc" in url:
         print("Detected codelist.cc URL. Extracting metadata...")
         metadata = extract_metadata_from_codelist(url, work_dir)
         
-        if metadata and metadata.get('upload_ee_url'):
-             print(f"Found upload.ee URL: {metadata['upload_ee_url']}")
-             url = metadata['upload_ee_url']
-             # Process as upload.ee
-             zip_path = process_upload_ee_url(url, work_dir, progress_callback, add_copyright)
+        # Collect candidates
+        candidates = []
+        if metadata.get('upload_ee_url'): candidates.append(('upload.ee', metadata['upload_ee_url']))
+        if metadata.get('krakenfiles_url'): candidates.append(('krakenfiles', metadata['krakenfiles_url']))
+        if metadata.get('workupload_url'): candidates.append(('workupload', metadata['workupload_url']))
+        if metadata.get('pixeldrain_url'): candidates.append(('pixeldrain', metadata['pixeldrain_url']))
+        
+        if not candidates:
+             raise Exception("Could not find supported download link (upload.ee, krakenfiles, workupload, pixeldrain) on the provided codelist.cc page.")
              
-        elif metadata and metadata.get('krakenfiles_url'):
-             print(f"Found Krakenfiles URL: {metadata['krakenfiles_url']}")
-             url = metadata['krakenfiles_url']
-             # Process as Krakenfiles
-             zip_path = process_krakenfiles_url(url, work_dir, progress_callback, add_copyright)
-             
-        elif metadata and metadata.get('workupload_url'):
-             print(f"Found Workupload URL: {metadata['workupload_url']}")
-             url = metadata['workupload_url']
-             # Process as Workupload
-             zip_path = process_workupload_url(url, work_dir, progress_callback, add_copyright)
-             
-        elif metadata and metadata.get('pixeldrain_url'):
-             print(f"Found Pixeldrain URL: {metadata['pixeldrain_url']}")
-             url = metadata['pixeldrain_url']
-             # Process as Pixeldrain
-             zip_path = process_pixeldrain_url(url, work_dir, progress_callback, add_copyright)
-             
-        else:
-            raise Exception("Could not find supported download link (upload.ee, krakenfiles, workupload, pixeldrain) on the provided codelist.cc page.")
+        for host, link in candidates:
+            print(f"Attempting download from {host}: {link}")
+            try:
+                if host == 'upload.ee':
+                    zip_path = process_upload_ee_url(link, work_dir, progress_callback, add_copyright)
+                elif host == 'krakenfiles':
+                    zip_path = process_krakenfiles_url(link, work_dir, progress_callback, add_copyright)
+                elif host == 'workupload':
+                    zip_path = process_workupload_url(link, work_dir, progress_callback, add_copyright)
+                elif host == 'pixeldrain':
+                    zip_path = process_pixeldrain_url(link, work_dir, progress_callback, add_copyright)
+                
+                if zip_path and os.path.exists(zip_path):
+                    print(f"Successfully processed using {host}")
+                    break # Success!
+                else:
+                    print(f"Failed to process with {host} (no file returned)")
+            except Exception as e:
+                print(f"Error processing with {host}: {e}")
+                # Continue to next candidate
     
     else:
         # Direct link provided (assume upload.ee or krakenfiles)

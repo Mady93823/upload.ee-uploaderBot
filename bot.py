@@ -402,7 +402,7 @@ async def handle_message(client, message):
             lambda: process_url(url, work_dir, progress_callback=download_progress_callback, add_copyright=add_copyright)
         )
         
-        if os.path.exists(zip_path):
+        if zip_path and os.path.exists(zip_path):
             await status_msg.edit_text("Processing complete. Uploading...")
             
             # 2. Upload with progress
