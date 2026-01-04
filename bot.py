@@ -360,14 +360,20 @@ async def process_and_post_to_channel(client, url):
             demo_url = metadata.get('demo_url')
             description = metadata.get('description')
             
-            # Construct Caption
-            caption = f"✨ **{title}** ✨\n\n"
+            # Stylish Caption
+            caption = f"🔥 **{title}**\n\n"
+            
             if description:
-                caption += f"{description}\n\n"
+                # Limit description length to avoid clutter
+                desc_preview = description[:300] + "..." if len(description) > 300 else description
+                caption += f"📝 **Description**:\n{desc_preview}\n\n"
+            
             if demo_url:
                 caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
-            caption += "━━━━━━━━━━━━━━━━━━━\n"
-            caption += "👨‍💻 **By**: @freephplaravel"
+                
+            caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
+            caption += "� **Join Channel**: @freephplaravel\n"
+            caption += "━━━━━━━━━━━━━━━━━━━━━"
             
             # Truncate caption if needed (1024 char limit)
             if len(caption) > 1024:
@@ -833,13 +839,20 @@ async def handle_message(client, message):
             demo_url = metadata.get('demo_url')
             description = metadata.get('description')
             
-            caption = f"✨ **{title}** ✨\n\n"
+            # Stylish Caption
+            caption = f"🔥 **{title}**\n\n"
+            
             if description:
-                caption += f"{description}\n\n"
+                # Limit description length to avoid clutter
+                desc_preview = description[:300] + "..." if len(description) > 300 else description
+                caption += f"📝 **Description**:\n{desc_preview}\n\n"
+            
             if demo_url:
                 caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
-            caption += "━━━━━━━━━━━━━━━━━━━\n"
-            caption += "👨‍💻 **By**: @freephplaravel"
+                
+            caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
+            caption += "� **Join Channel**: @freephplaravel\n"
+            caption += "━━━━━━━━━━━━━━━━━━━━━"
             
             if len(caption) > 1024:
                 caption = caption[:1021] + "..."
@@ -850,24 +863,67 @@ async def handle_message(client, message):
             
             await status_msg.delete()
             
+            # Send to User (Preview)
+            sent_msg = None
+            
+            # Logic for Image Selection (Local vs Remote)
+            local_img = metadata.get('image_path')
+            use_local_img = local_img and os.path.exists(local_img)
+            
             if image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
-                await message.reply_photo(
+                # Valid remote image
+                sent_msg = await message.reply_photo(
                     photo=image_url,
                     caption=caption,
                     reply_markup=keyboard
                 )
-            elif image_url and "codelist.cc" in image_url:
-                 await message.reply_message(
-                    text=caption,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True
+            elif use_local_img:
+                # Fallback to local processed image (cropped/cleaned)
+                sent_msg = await message.reply_photo(
+                    photo=local_img,
+                    caption=caption,
+                    reply_markup=keyboard
                 )
             else:
-                await message.reply_text(
+                # Text fallback
+                sent_msg = await message.reply_text(
                     text=caption,
                     reply_markup=keyboard,
                     disable_web_page_preview=True
                 )
+                
+            # Auto-Post to Channel if Admin
+            if should_autopost and sent_msg:
+                logging.info(f"Auto-posting to channel {CHANNEL_ID}")
+                try:
+                    # We can simply copy the message? No, copy doesn't work well with buttons sometimes if they are login urls etc, but here they are URL buttons.
+                    # Better to send fresh to ensure formatting.
+                    
+                    if image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
+                        await client.send_photo(
+                            chat_id=CHANNEL_ID,
+                            photo=image_url,
+                            caption=caption,
+                            reply_markup=keyboard
+                        )
+                    elif use_local_img:
+                        await client.send_photo(
+                            chat_id=CHANNEL_ID,
+                            photo=local_img,
+                            caption=caption,
+                            reply_markup=keyboard
+                        )
+                    else:
+                        await client.send_message(
+                            chat_id=CHANNEL_ID,
+                            text=caption,
+                            reply_markup=keyboard,
+                            disable_web_page_preview=True
+                        )
+                    
+                    await message.reply_text(f"✅ Posted to channel `{CHANNEL_ID}`")
+                except Exception as e:
+                    await message.reply_text(f"⚠️ Failed to post to channel: {e}")
             
         else:
             await status_msg.edit_text("Processing failed. Please check the logs.")
