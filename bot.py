@@ -43,6 +43,13 @@ MONITOR_ACTIVE = True
 MAINTENANCE_MODE = False
 FORCE_SUB_ACTIVE = True
 
+# RSS Stats
+RSS_STATS = {
+    "last_check": "Never",
+    "total_found": 0,
+    "total_processed": 0
+}
+
 BOT_USERNAME = None
 
 if not all([TOKEN, API_ID, API_HASH, MONGO_URI]):
@@ -192,6 +199,7 @@ async def monitor_codelist(client):
     """
     # URLs to monitor
     urls_to_monitor = [
+        "https://codelist.cc/v3/",
         "https://codelist.cc/scripts3/",
         "https://codelist.cc/plugins3/",
         "https://codelist.cc/mobile/",
@@ -211,6 +219,8 @@ async def monitor_codelist(client):
                 continue
 
             logging.info("Checking for new posts...")
+            RSS_STATS["last_check"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
             loop = asyncio.get_running_loop()
             
             def fetch_feed(u):
@@ -265,6 +275,7 @@ async def monitor_codelist(client):
                 
                 if new_posts:
                     logging.info(f"Found {len(new_posts)} new posts!")
+                    RSS_STATS["total_found"] += len(new_posts)
                     
                     # Process from oldest to newest
                     for post_url in reversed(new_posts):
@@ -273,6 +284,7 @@ async def monitor_codelist(client):
                             await process_and_post_to_channel(client, post_url)
                             # Mark as processed ONLY after success (or attempt)
                             await file_store.add_processed_url(post_url)
+                            RSS_STATS["total_processed"] += 1
                         except Exception as e:
                             logging.error(f"Failed to auto-process {post_url}: {e}")
                             # Mark as processed to prevent infinite retry loop on bad posts
@@ -502,11 +514,15 @@ async def settings_command(client, message):
     
     text = (
         "⚙️ **Admin Control Panel**\n\n"
-        "📊 **Stats**:\n"
+        "📊 **System Stats**:\n"
         f"• Uptime: `{uptime}`\n"
         f"• RAM: `{ram_usage}`\n"
         f"• Users: `{total_users}`\n"
         f"• Channel: {channel_text}\n\n"
+        "📰 **RSS Stats**:\n"
+        f"• Last Check: `{RSS_STATS['last_check']}`\n"
+        f"• Total Found: `{RSS_STATS['total_found']}`\n"
+        f"• Processed: `{RSS_STATS['total_processed']}`\n\n"
         "🔘 **Toggles**:"
     )
     
