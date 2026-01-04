@@ -1,32 +1,39 @@
-# Upload.ee Uploader Bot
+# Auto File Processor Bot
 
-A powerful Telegram bot that downloads files from **Upload.ee**, cleans them, adds your custom files, and re-uploads them.
+A powerful Telegram bot designed to automate the downloading, processing, and re-uploading of files. It includes advanced features like RSS monitoring, user management, and an admin control panel.
 
-## Features
+## 🚀 Features
 
-*   **Download & Process**: Automatically downloads files from Upload.ee links.
-*   **Auto-Clean**: Removes unwanted files from the downloaded archive.
-*   **Copyright Injection**: Adds your custom copyright files (from `Copyright_files/` folder) into the archive.
-*   **Repack**: Repacks everything into a clean ZIP file.
+*   **Automated Monitoring**: Monitors configured sources for new content and processes it automatically.
+*   **Smart Deduplication**: Uses a database to track processed posts, ensuring no duplicates even after restarts.
+*   **File Processing**: Downloads files, cleans unwanted content, and injects custom copyright files.
+*   **Admin Control Panel**: manage the bot directly from Telegram via `/settings`.
+*   **User Management**: Tracks users and allows broadcasting messages to all users.
+*   **Force Join**: (Optional) Forces users to join specific channels to access files.
 *   **Large File Support**: Handles files up to 2GB.
-*   **Force Join Channel**: (Optional) Forces users to join specific channels before using the bot.
-*   **Admin Auto-Post**: Admins can auto-post processed files to a configured channel.
 
-## Commands
+## 🤖 Commands
 
-*   `/start` - Check if the bot is running.
-*   `/settings` - (Admin only) View and configure bot settings.
-*   `/check_channel` - (Admin only) Verify bot permissions in the configured channel.
+### User Commands
+*   `/start` - Start the bot or access a file via deep link.
 
-## Deployment on Koyeb
+### Admin Commands
+*   `/settings` - Open the Admin Control Panel (Live Stats, Toggles, Actions).
+*   `/broadcast <message>` - Send a message to all bot users.
+*   `/users` - Check the total number of users.
+*   `/logs` - Get the current bot log file.
+*   `/restart` - Restart the bot process.
+*   `/check_channel` - Verify bot permissions in the configured channel.
 
-This bot is ready for deployment on **Koyeb**.
+## 🛠 Deployment (VPS / Koyeb)
 
-1.  **Fork/Clone** this repository.
-2.  Create a new App on Koyeb.
-3.  Select **GitHub** as the deployment method and choose this repository.
-4.  Set the **Builder** to **Dockerfile**.
-5.  Add the following **Environment Variables** in Koyeb:
+### 1. Prerequisites
+*   **Python 3.9+**
+*   **MongoDB** (Atlas or Local)
+*   **Telegram API Credentials** (API_ID, API_HASH, TOKEN)
+
+### 2. Environment Variables
+Set the following variables in your `.env` file or VPS/Koyeb environment settings:
 
 | Variable | Description |
 | :--- | :--- |
@@ -36,13 +43,57 @@ This bot is ready for deployment on **Koyeb**.
 | `MONGO_URI` | Your MongoDB Connection String |
 | `ADMIN_ID` | Your Telegram User ID (for admin commands) |
 | `CHANNEL_ID` | (Optional) Channel ID for auto-posting (e.g., `-100xxxx`) |
-| `JOIN_CHANNELS` | (Optional) Space-separated Channel IDs users must join (e.g., `-100xxxx -100yyyy`) |
+| `JOIN_CHANNELS` | (Optional) Space-separated Channel IDs for Force Join (e.g., `-100xxxx -100yyyy`) |
 
+### 3. VPS Deployment (Ubuntu/Debian)
+
+1.  **Update & Install Dependencies**:
+    ```bash
+    sudo apt update && sudo apt upgrade -y
+    sudo apt install python3-pip python3-venv git p7zip-full p7zip-rar -y
+    ```
+
+2.  **Clone Repository**:
+    ```bash
+    git clone <your-repo-url>
+    cd <your-repo-folder>
+    ```
+
+3.  **Setup Virtual Environment**:
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+4.  **Install Python Packages**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+5.  **Run the Bot**:
+    *   **Directly**: `python bot.py`
+    *   **As Service (Recommended)**: Use `systemd` or `screen`/`tmux`.
+
+### 4. Koyeb Deployment
+
+1.  **Fork/Clone** this repository.
+2.  Create a new App on Koyeb.
+3.  Select **GitHub** as the deployment method.
+4.  Set **Builder** to **Dockerfile**.
+5.  Add the **Environment Variables** listed above.
 6.  Deploy!
 
-## Local Development
+## 📁 Project Structure
 
-1.  Clone the repo.
-2.  Install dependencies: `pip install -r requirements.txt`
-3.  Create a `.env` file with the variables listed above.
-4.  Run the bot: `python bot.py`
+*   `bot.py`: Main bot logic (Telegram handlers, RSS monitor, Admin panel).
+*   `processor.py`: Core file processing logic (Download, Extract, Clean, Repack).
+*   `Copyright_files/`: Folder containing files to be injected into every processed archive.
+*   `requirements.txt`: Python dependencies.
+*   `Dockerfile`: Configuration for containerized deployment.
+
+## ⚠️ Notes for VPS Users
+*   Ensure `p7zip-full` and `p7zip-rar` are installed for handling RAR/ZIP files.
+*   If you encounter `403 Forbidden` errors during scraping, the bot uses `curl_cffi` to bypass protections, which is pre-configured.
+
+---
+**Developed for automation and efficiency.**

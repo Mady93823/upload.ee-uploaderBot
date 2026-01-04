@@ -6,6 +6,9 @@ import shutil
 import secrets
 import psutil
 import platform
+import sys
+import datetime
+import re
 import motor.motor_asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -63,6 +66,31 @@ class MongoFileStore:
         )
         self.db = self.client.codelist_bot
         self.collection = self.db.CODELIST
+        self.users = self.db.USERS
+        self.processed = self.db.PROCESSED_POSTS
+
+    async def add_user(self, user_id, first_name):
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "first_name": first_name, "last_active": datetime.datetime.now()}},
+            upsert=True
+        )
+
+    async def is_url_processed(self, url):
+        return await self.processed.find_one({"url": url})
+
+    async def add_processed_url(self, url):
+        await self.processed.update_one(
+            {"url": url},
+            {"$set": {"url": url, "processed_at": datetime.datetime.now()}},
+            upsert=True
+        )
+
+    async def get_total_users(self):
+        return await self.users.count_documents({})
+
+    async def get_all_users(self):
+        return self.users.find({})
 
     async def save_file(self, file_id, caption=None):
         # Generate a unique 8-char code
@@ -155,94 +183,99 @@ async def check_force_sub(client, user_id):
 # --- RSS / Monitor Logic ---
 async def monitor_codelist(client):
     """
-    Background task to monitor https://codelist.cc/scripts3/ for new posts.
+    Background task to monitor codelist.cc for new posts.
     """
-    url = "https://codelist.cc/scripts3/"
-    print(f"Starting Monitor for {url}")
+    # URLs to monitor
+    urls_to_monitor = [
+        "https://codelist.cc/scripts3/",
+        "https://codelist.cc/plugins3/",
+        "https://codelist.cc/mobile/",
+        "https://codelist.cc/templates/"
+    ]
     
-    # Store processed URLs in memory (or DB for persistence)
-    # Ideally, we check the latest DB entry to see what we have last processed.
-    # But for simplicity, we can keep a set of recently seen URLs.
-    # To be robust on restart, we should probably query the DB or just start fresh.
-    # Let's assume on restart we don't want to spam old posts, so we fetch current page 
-    # and mark them as "seen", then only process NEW ones appearing later.
+    print(f"Starting Monitor for {urls_to_monitor}")
     
-    seen_urls = set()
-    first_run = True
+    # Initialize DB-based tracking
+    processed_count = await file_store.processed.count_documents({})
+    first_run_db_init = processed_count == 0
     
     while True:
         try:
+            if not MONITOR_ACTIVE:
+                await asyncio.sleep(60)
+                continue
+
             logging.info("Checking for new posts...")
-            # Use cffi to bypass potential cloudflare
-            # We can't do async cffi easily without running in executor or using async lib
-            # But run_in_executor is fine for now.
-            
             loop = asyncio.get_running_loop()
             
-            def fetch_feed():
+            def fetch_feed(u):
                 try:
-                    r = cffi_requests.get(url, impersonate="chrome120", timeout=30)
+                    r = cffi_requests.get(u, impersonate="chrome120", timeout=30, allow_redirects=True)
                     return r.text
                 except Exception as e:
-                    logging.error(f"Monitor fetch error: {e}")
+                    logging.error(f"Monitor fetch error for {u}: {e}")
                     return None
 
-            html = await loop.run_in_executor(None, fetch_feed)
+            current_batch = []
             
-            if html:
-                soup = BeautifulSoup(html, 'html.parser')
-                # Find all post links
-                # Usually in .short-story or similar. 
-                # We look for links in /scripts3/ that end in .html
+            for url in urls_to_monitor:
+                html = await loop.run_in_executor(None, fetch_feed, url)
                 
-                current_batch = []
-                for a in soup.find_all('a', href=True):
-                    href = a['href']
-                    if '/scripts3/' in href and '.html' in href:
-                        # Normalize
-                        if href not in current_batch:
-                            current_batch.append(href)
-                
-                # In first run, mark all as seen so we don't repost old stuff
-                if first_run:
-                    seen_urls.update(current_batch)
-                    logging.info(f"Monitor initialized. Marked {len(seen_urls)} posts as seen.")
-                    first_run = False
-                else:
-                    # Check for new ones
-                    # The list is usually ordered new -> old.
-                    # We process them. To preserve order (oldest new -> newest new), we reverse.
-                    
-                    new_posts = [u for u in current_batch if u not in seen_urls]
-                    
-                    if new_posts:
-                        logging.info(f"Found {len(new_posts)} new posts!")
+                if html:
+                    soup = BeautifulSoup(html, 'html.parser')
+                    # Find all post links
+                    for a in soup.find_all('a', href=True):
+                        href = a['href']
                         
-                        # Process from oldest to newest if multiple found
-                        for post_url in reversed(new_posts):
-                            logging.info(f"Auto-processing: {post_url}")
-                            
-                            # Create a dummy message object or just call the logic
-                            # We need to simulate the flow: process -> upload -> post to channel
-                            
-                            # We can reuse the core logic if we extract it to a function
-                            # that doesn't depend heavily on 'message' object for status updates
-                            # or we mock it.
-                            
-                            try:
-                                await process_and_post_to_channel(client, post_url)
-                                seen_urls.add(post_url)
-                            except Exception as e:
-                                logging.error(f"Failed to auto-process {post_url}: {e}")
-                                # Don't add to seen if failed? Or add to avoid infinite loop?
-                                # Better add to avoid loop.
-                                seen_urls.add(post_url)
-                                
-                            # Sleep a bit between posts
-                            await asyncio.sleep(10)
+                        # Clean URL (remove anchor/query)
+                        href = href.split('#')[0].split('?')[0]
+                        
+                        # Filter for valid content posts
+                        is_content = False
+                        if '.html' in href:
+                             if any(cat in href for cat in ['/scripts3/', '/plugins3/', '/apps3/', '/mobile/', '/templates/']):
+                                 is_content = True
+                             # Fallback: if it's from main site and looks like a post (has numeric ID)
+                             elif 'codelist.cc' in href and re.search(r'/\d+-', href):
+                                 is_content = True
+                        
+                        if is_content:
+                             if href not in current_batch:
+                                 current_batch.append(href)
             
-            # Wait 10 minutes before next check
-            await asyncio.sleep(600)
+            if first_run_db_init:
+                # If this is the very first run (DB empty), mark all current posts as processed
+                # so we don't spam 50+ messages.
+                logging.info(f"Initializing DB with {len(current_batch)} existing posts...")
+                for url in current_batch:
+                    await file_store.add_processed_url(url)
+                first_run_db_init = False
+                logging.info("DB Initialization Complete.")
+            else:
+                # Normal check against DB
+                new_posts = []
+                for url in current_batch:
+                    if not await file_store.is_url_processed(url):
+                        new_posts.append(url)
+                
+                if new_posts:
+                    logging.info(f"Found {len(new_posts)} new posts!")
+                    
+                    # Process from oldest to newest
+                    for post_url in reversed(new_posts):
+                        logging.info(f"Auto-processing: {post_url}")
+                        try:
+                            await process_and_post_to_channel(client, post_url)
+                            # Mark as processed ONLY after success (or attempt)
+                            await file_store.add_processed_url(post_url)
+                        except Exception as e:
+                            logging.error(f"Failed to auto-process {post_url}: {e}")
+                            # Mark as processed to prevent infinite retry loop on bad posts
+                            await file_store.add_processed_url(post_url)
+                            
+                        await asyncio.sleep(10)
+        
+            await asyncio.sleep(600) # 10 minutes
             
         except Exception as e:
             logging.error(f"Monitor loop error: {e}")
@@ -378,44 +411,56 @@ async def process_and_post_to_channel(client, url):
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
+    # Save User
+    try:
+        await file_store.add_user(message.from_user.id, message.from_user.first_name)
+    except Exception as e:
+        logging.error(f"Error saving user: {e}")
+
+    # Maintenance Mode Check
+    if MAINTENANCE_MODE and message.from_user.id != ADMIN_ID:
+        await message.reply_text("🚧 **Bot is currently under maintenance.**\nPlease try again later.")
+        return
+
     # Check for deep link arguments
     if len(message.command) > 1:
         code = message.command[1]
         
         # Force Subscribe Check
-        is_joined, missing_channels = await check_force_sub(client, message.from_user.id)
-        if not is_joined:
-            buttons = []
-            for channel_id in missing_channels:
-                try:
-                    chat = await client.get_chat(channel_id)
-                    invite_link = chat.invite_link or f"https://t.me/{chat.username}" if chat.username else None
-                    if not invite_link:
-                         # Try to generate one if bot is admin
-                         try:
-                             invite_link = await client.export_chat_invite_link(channel_id)
-                         except:
-                             pass
-                    
-                    if invite_link:
-                        buttons.append([InlineKeyboardButton(f"Join {chat.title}", url=invite_link)])
-                except Exception:
-                    pass
-            
-            # Add Try Again button with the same deep link
-            global BOT_USERNAME
-            if not BOT_USERNAME:
-                me = await client.get_me()
-                BOT_USERNAME = me.username
+        if FORCE_SUB_ACTIVE:
+            is_joined, missing_channels = await check_force_sub(client, message.from_user.id)
+            if not is_joined:
+                buttons = []
+                for channel_id in missing_channels:
+                    try:
+                        chat = await client.get_chat(channel_id)
+                        invite_link = chat.invite_link or f"https://t.me/{chat.username}" if chat.username else None
+                        if not invite_link:
+                             # Try to generate one if bot is admin
+                             try:
+                                 invite_link = await client.export_chat_invite_link(channel_id)
+                             except:
+                                 pass
+                        
+                        if invite_link:
+                            buttons.append([InlineKeyboardButton(f"Join {chat.title}", url=invite_link)])
+                    except Exception:
+                        pass
                 
-            deep_link = f"https://t.me/{BOT_USERNAME}?start={code}"
-            buttons.append([InlineKeyboardButton("Try Again 🔄", url=deep_link)])
-            
-            await message.reply_text(
-                "🔒 **Access Denied**\n\nPlease join our channels to download this file.",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
-            return
+                # Add Try Again button with the same deep link
+                global BOT_USERNAME
+                if not BOT_USERNAME:
+                    me = await client.get_me()
+                    BOT_USERNAME = me.username
+                    
+                deep_link = f"https://t.me/{BOT_USERNAME}?start={code}"
+                buttons.append([InlineKeyboardButton("Try Again 🔄", url=deep_link)])
+                
+                await message.reply_text(
+                    "🔒 **Access Denied**\n\nPlease join our channels to download this file.",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+                return
 
         try:
             file_info = await file_store.get_file(code)
@@ -438,26 +483,136 @@ async def start(client, message):
         "⚡ Supports large files up to 2GB!"
     )
 
-# --- Admin Settings ---
-
+# --- Admin Settings & Tools ---
 @app.on_message(filters.command("settings") & filters.user(ADMIN_ID))
 async def settings_command(client, message):
     global CHANNEL_ID
     
+    # Stats
+    uptime = time.strftime("%Hh %Mm", time.gmtime(time.time() - BOT_START_TIME))
+    process = psutil.Process(os.getpid())
+    ram_usage = f"{process.memory_info().rss / 1024 / 1024:.2f} MB"
+    total_users = await file_store.get_total_users()
     channel_text = f"`{CHANNEL_ID}`" if CHANNEL_ID else "Not Set"
     
     text = (
-        "**Admin Settings**\n\n"
-        f"Current Channel ID: {channel_text}\n"
-        "Use the button below to set the channel.\n"
-        "Use /check_channel to verify bot permissions."
+        "⚙️ **Admin Control Panel**\n\n"
+        "📊 **Stats**:\n"
+        f"• Uptime: `{uptime}`\n"
+        f"• RAM: `{ram_usage}`\n"
+        f"• Users: `{total_users}`\n"
+        f"• Channel: {channel_text}\n\n"
+        "🔘 **Toggles**:"
     )
     
+    # Toggle Buttons
+    mon_icon = "✅" if MONITOR_ACTIVE else "❌"
+    maint_icon = "✅" if MAINTENANCE_MODE else "❌"
+    force_icon = "✅" if FORCE_SUB_ACTIVE else "❌"
+    
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Set Channel ID", callback_data="set_channel")]
+        [
+            InlineKeyboardButton(f"{mon_icon} Monitor", callback_data="toggle_monitor"),
+            InlineKeyboardButton(f"{maint_icon} Maintenance", callback_data="toggle_maintenance")
+        ],
+        [
+            InlineKeyboardButton(f"{force_icon} Force Sub", callback_data="toggle_force_sub"),
+            InlineKeyboardButton("Set Channel ID", callback_data="set_channel")
+        ],
+        [
+            InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_info"),
+            InlineKeyboardButton("📄 Get Logs", callback_data="get_logs")
+        ],
+        [
+            InlineKeyboardButton("🔄 Restart Bot", callback_data="restart_bot")
+        ]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
+
+@app.on_callback_query(filters.regex("toggle_") & filters.user(ADMIN_ID))
+async def handle_toggles(client, callback_query: CallbackQuery):
+    global MONITOR_ACTIVE, MAINTENANCE_MODE, FORCE_SUB_ACTIVE
+    data = callback_query.data
+    
+    if data == "toggle_monitor":
+        MONITOR_ACTIVE = not MONITOR_ACTIVE
+    elif data == "toggle_maintenance":
+        MAINTENANCE_MODE = not MAINTENANCE_MODE
+    elif data == "toggle_force_sub":
+        FORCE_SUB_ACTIVE = not FORCE_SUB_ACTIVE
+        
+    # Refresh Panel
+    await settings_command(client, callback_query.message)
+
+@app.on_callback_query(filters.regex("broadcast_info") & filters.user(ADMIN_ID))
+async def broadcast_info(client, callback_query: CallbackQuery):
+    await callback_query.answer("Use /broadcast <message> to send to all users.", show_alert=True)
+
+@app.on_callback_query(filters.regex("get_logs") & filters.user(ADMIN_ID))
+async def get_logs_callback(client, callback_query: CallbackQuery):
+    await callback_query.answer("Sending logs...")
+    if os.path.exists("bot.log"):
+        await client.send_document(
+            chat_id=ADMIN_ID,
+            document="bot.log",
+            caption="📄 **Bot Logs**"
+        )
+    else:
+        await client.send_message(ADMIN_ID, "❌ No log file found.")
+
+@app.on_callback_query(filters.regex("restart_bot") & filters.user(ADMIN_ID))
+async def restart_bot_callback(client, callback_query: CallbackQuery):
+    await callback_query.answer("Restarting...", show_alert=True)
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
+async def broadcast_command(client, message):
+    if len(message.command) < 2:
+        await message.reply_text("⚠️ Usage: `/broadcast <message>`")
+        return
+        
+    text = message.text.split(None, 1)[1]
+    total_users = await file_store.get_total_users()
+    
+    status_msg = await message.reply_text(f"📢 Starting broadcast to {total_users} users...")
+    
+    success = 0
+    failed = 0
+    
+    # Get all users (cursor)
+    cursor = await file_store.get_all_users()
+    
+    async for user in cursor:
+        try:
+            await client.send_message(user['user_id'], text)
+            success += 1
+            await asyncio.sleep(0.1) # Flood wait prevention
+        except Exception:
+            failed += 1
+            
+    await status_msg.edit_text(
+        f"✅ **Broadcast Complete**\n\n"
+        f"✨ Success: `{success}`\n"
+        f"❌ Failed: `{failed}`"
+    )
+
+@app.on_message(filters.command("logs") & filters.user(ADMIN_ID))
+async def logs_command(client, message):
+    if os.path.exists("bot.log"):
+        await message.reply_document("bot.log", caption="📄 **Bot Logs**")
+    else:
+        await message.reply_text("❌ No log file found.")
+
+@app.on_message(filters.command("users") & filters.user(ADMIN_ID))
+async def users_command(client, message):
+    total_users = await file_store.get_total_users()
+    await message.reply_text(f"👥 **Total Users**: `{total_users}`")
+
+@app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
+async def restart_command(client, message):
+    await message.reply_text("🔄 Restarting bot...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 @app.on_message(filters.command("check_channel") & filters.user(ADMIN_ID))
 async def check_channel_command(client, message):
@@ -537,27 +692,7 @@ def get_size(bytes, suffix="B"):
             return f"{bytes:.2f}{unit}{suffix}"
         bytes /= factor
 
-if __name__ == "__main__":
-    logging.info("Starting bot...")
-    
-    # Register the monitor task on startup
-    async def on_start(client):
-        global BOT_USERNAME
-        me = await client.get_me()
-        BOT_USERNAME = me.username
-        logging.info(f"Bot started as @{BOT_USERNAME}")
-        
-        # Start Monitor
-        asyncio.create_task(monitor_codelist(client))
-
-    # We need to use add_handler or standard run
-    # Pyrogram's app.run() blocks. 
-    # To run a background task, we can hook into the 'start' signal or just create task before run if using custom loop
-    # But app.run() creates its own loop.
-    # Best way in Pyrogram: use decorators or client.start() manually.
-    
-    # We will use the start callback
-    @app.on_message(filters.command("stats"))
+@app.on_message(filters.command("stats"))
 async def stats_command(client, message):
     # System Stats
     uname = platform.uname()
@@ -637,12 +772,15 @@ async def handle_message(client, message):
         loop = asyncio.get_running_loop()
         
         # Determine if we should add copyright files (only for admin autopost?)
-        # Requirement: "and delete those files and add this files inside ... in root of cleaned zip"
-        # Implies we should do it for this flow.
+        # For now, let's say only add copyright if explicit command or always?
+        # User requested to just upload, but in auto-mode we added copyright.
+        # Let's keep manual mode clean unless specified.
+        add_copyright = False # Default manual
         
-        add_copyright = should_autopost
+        # We can add a flag logic if needed later
         
-        # Run processing in thread pool
+        # Run processing in executor to avoid blocking
+        executor = None 
         zip_path, metadata = await loop.run_in_executor(
             executor, 
             lambda: process_url(url, work_dir, progress_callback=download_progress_callback, add_copyright=add_copyright)
@@ -651,123 +789,79 @@ async def handle_message(client, message):
         if zip_path and os.path.exists(zip_path):
             await status_msg.edit_text("Processing complete. Uploading...")
             
-            # 2. Upload with progress
-            upload_tracker = ProgressTracker(status_msg, "Uploading...")
+            # 2. Upload
+            caption_file = f"{metadata.get('title', 'File')}\n\nUploaded by Bot"
             
-            async def upload_progress(current, total):
-                await upload_tracker.update(current, total)
-
-            # Send to User first
-            sent_msg = await client.send_document(
+            # Upload to Telegram
+            # We upload to the user who requested it
+            msg = await client.send_document(
                 chat_id=message.chat.id,
                 document=zip_path,
-                caption="Here is your cleaned file!",
-                progress=upload_progress
+                caption=caption_file
             )
             
-            # 3. Auto-Post to Channel
-            if should_autopost:
-                if metadata and metadata.get('title'):
-                    title = metadata['title']
-                    image_url = metadata.get('image_url')
-                    image_path = metadata.get('image_path')
-                    demo_url = metadata.get('demo_url')
-                    description = metadata.get('description')
-                    
-                    # Cool caption with emojis and demo link
-                    caption = f"✨ **{title}** ✨\n\n"
-                    
-                    if description:
-                        caption += f"{description}\n\n"
-                        
-                    if demo_url:
-                        caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
-                    
-                    caption += "━━━━━━━━━━━━━━━━━━━\n"
-                    caption += "👨‍💻 **By**: @freephplaravel"
-
-                    await status_msg.edit_text("Posting to channel...")
-                    
-                    try:
-                        # Save file to store and generate link
-                        global BOT_USERNAME
-                        if not BOT_USERNAME:
-                            me = await client.get_me()
-                            BOT_USERNAME = me.username
-                            
-                        file_code = await file_store.save_file(sent_msg.document.file_id, caption)
-                        deep_link = f"https://t.me/{BOT_USERNAME}?start={file_code}"
-                        
-                        keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Download 📥", url=deep_link)]
-                        ])
-
-                        # Send Image with Caption and Button
-                        if image_path and os.path.exists(image_path):
-                            await client.send_photo(
-                                chat_id=CHANNEL_ID,
-                                photo=image_path,
-                                caption=caption,
-                                reply_markup=keyboard
-                            )
-                        elif image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
-                            # Only send the fallback URL if it's NOT from codelist (e.g. CodeCanyon)
-                            # This ensures we never show the watermarked image if local processing failed.
-                            await client.send_photo(
-                                chat_id=CHANNEL_ID,
-                                photo=image_url,
-                                caption=caption,
-                                reply_markup=keyboard
-                            )
-                        elif image_url and "codelist.cc" in image_url:
-                             # If we have a Codelist URL but local processing failed (maybe it's a direct link to a jpg)
-                             # We can try to send it, but it might have the logo.
-                             # Given the user's strict requirement, we should probably SKIP sending it if it has the logo.
-                             # But if we have NOTHING else, maybe sending it is better than nothing?
-                             # The user said "hide codelist logo", so let's stick to text-only if we can't crop.
-                             await client.send_message(
-                                chat_id=CHANNEL_ID,
-                                text=caption,
-                                reply_markup=keyboard,
-                                disable_web_page_preview=True
-                            )
-                        else:
-                            # Fallback to text-only if we can't get a clean image
-                            await client.send_message(
-                                chat_id=CHANNEL_ID,
-                                text=caption,
-                                reply_markup=keyboard,
-                                disable_web_page_preview=True
-                            )
-                            
-                        # Removed: await client.send_document(...) - No longer sending file directly
-                        
-                        await status_msg.edit_text("Successfully posted to channel!")
-                        
-                    except Exception as e:
-                        logging.error(f"Failed to post to channel: {e}")
-                        await status_msg.edit_text(f"File sent, but failed to post to channel: {e}")
-                else:
-                     await status_msg.edit_text("File sent, but could not extract metadata for channel post.")
+            file_id = msg.document.file_id
             
+            # 3. Store
+            code = await file_store.save_file(file_id, caption=caption_file)
+            bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
+            
+            # 4. Reply with formatted post (Preview)
+            title = metadata.get('title', 'New Script')
+            image_url = metadata.get('image_url')
+            demo_url = metadata.get('demo_url')
+            description = metadata.get('description')
+            
+            caption = f"✨ **{title}** ✨\n\n"
+            if description:
+                caption += f"{description}\n\n"
+            if demo_url:
+                caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
+            caption += "━━━━━━━━━━━━━━━━━━━\n"
+            caption += "👨‍💻 **By**: @freephplaravel"
+            
+            if len(caption) > 1024:
+                caption = caption[:1021] + "..."
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Download File 📥", url=bot_link)]
+            ])
+            
+            await status_msg.delete()
+            
+            if image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
+                await message.reply_photo(
+                    photo=image_url,
+                    caption=caption,
+                    reply_markup=keyboard
+                )
+            elif image_url and "codelist.cc" in image_url:
+                 await message.reply_message(
+                    text=caption,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True
+                )
             else:
-                await status_msg.delete()
-                
-        else:
-            await status_msg.edit_text("Error: Output file not found.")
+                await message.reply_text(
+                    text=caption,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True
+                )
             
+        else:
+            await status_msg.edit_text("Processing failed. Please check the logs.")
+
     except Exception as e:
-        logging.error(f"Error processing URL: {e}")
+        logging.error(f"Error: {e}")
         await status_msg.edit_text(f"An error occurred: {str(e)}")
-        
     finally:
-        # Cleanup
         if os.path.exists(work_dir):
             try:
                 shutil.rmtree(work_dir)
-            except Exception as e:
-                logging.error(f"Cleanup failed: {e}")
+            except:
+                pass
 
+# Clean up the if __name__ block mess I made
 if __name__ == "__main__":
     # We need to run the bot and the monitor
     # Pyrogram app.run() is blocking.
