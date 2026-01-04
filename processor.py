@@ -539,7 +539,7 @@ def process_workupload_url(url, work_dir, progress_callback=None, add_copyright=
     os.makedirs(download_dir)
 
     try:
-        session = cffi_requests.Session()
+        session = requests.Session()
         # 1. Get Page to set cookies
         resp = session.get(url, impersonate="chrome120")
         resp.raise_for_status()
@@ -595,7 +595,7 @@ def process_pixeldrain_url(url, work_dir, progress_callback=None, add_copyright=
         download_url = f"https://pixeldrain.com/api/file/{file_id}"
         print(f"Download URL: {download_url}")
         
-        session = cffi_requests.Session()
+        session = requests.Session()
         dl_resp = session.get(download_url, stream=True, impersonate="chrome120")
         dl_resp.raise_for_status()
         
