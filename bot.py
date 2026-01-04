@@ -670,10 +670,34 @@ async def check_channel_command(client, message):
 
 # State management for setting channel (simple in-memory)
 user_states = {}
+user_data = {}
+
+# Constants for States
+STATE_WAIT_CHANNEL = "waiting_for_channel"
+STATE_POST_TITLE = "post_wait_title"
+STATE_POST_DESC = "post_wait_desc"
+STATE_POST_DEMO = "post_wait_demo"
+STATE_POST_FILE = "post_wait_file"
+
+@app.on_message(filters.command("cancel") & filters.user(ADMIN_ID))
+async def cancel_command(client, message):
+    user_states.pop(message.from_user.id, None)
+    user_data.pop(message.from_user.id, None)
+    await message.reply_text("❌ Operation cancelled.")
+
+@app.on_message(filters.command("post") & filters.user(ADMIN_ID))
+async def post_command(client, message):
+    user_states[message.from_user.id] = STATE_POST_TITLE
+    user_data[message.from_user.id] = {}
+    await message.reply_text(
+        "📝 **Create New Post**\n\n"
+        "Please enter the **Title** of the content:\n"
+        "(/cancel to stop)"
+    )
 
 @app.on_callback_query(filters.regex("set_channel") & filters.user(ADMIN_ID))
 async def set_channel_callback(client, callback_query: CallbackQuery):
-    user_states[callback_query.from_user.id] = "waiting_for_channel"
+    user_states[callback_query.from_user.id] = STATE_WAIT_CHANNEL
     await callback_query.message.edit_text(
         "Please forward a message from the target channel or send the Channel ID (starts with -100)."
     )
@@ -683,7 +707,7 @@ async def handle_forward_for_channel(client, message):
     global CHANNEL_ID
     state = user_states.get(message.from_user.id)
     
-    if state == "waiting_for_channel":
+    if state == STATE_WAIT_CHANNEL:
         if message.forward_from_chat and message.forward_from_chat.type == "channel":
             CHANNEL_ID = message.forward_from_chat.id
             # Update .env (optional, but good for persistence in local dev)
@@ -693,18 +717,143 @@ async def handle_forward_for_channel(client, message):
         else:
             await message.reply_text("Please forward a message from a CHANNEL.")
 
-@app.on_message(filters.user(ADMIN_ID) & filters.regex(r"^-100\d+$"))
-async def handle_channel_id_text(client, message):
-    global CHANNEL_ID
+@app.on_message(filters.user(ADMIN_ID) & (filters.text | filters.document))
+async def handle_admin_states(client, message):
     state = user_states.get(message.from_user.id)
     
-    if state == "waiting_for_channel":
+    if not state:
+        message.continue_propagation()
+        return
+
+    if state == STATE_WAIT_CHANNEL:
+        # Handle text channel ID input
+        if message.text and re.match(r"^-100\d+$", message.text):
+            try:
+                global CHANNEL_ID
+                CHANNEL_ID = int(message.text)
+                user_states.pop(message.from_user.id, None)
+                await message.reply_text(f"Channel ID set to: `{CHANNEL_ID}`")
+            except ValueError:
+                await message.reply_text("Invalid ID format.")
+        else:
+             message.continue_propagation()
+        return
+
+    # /post Wizard Logic
+    data = user_data.get(message.from_user.id, {})
+
+    if state == STATE_POST_TITLE:
+        if not message.text:
+            await message.reply_text("Please send a valid text for Title.")
+            return
+        
+        data['title'] = message.text
+        user_states[message.from_user.id] = STATE_POST_DESC
+        await message.reply_text(
+            "✅ Title Set.\n\n"
+            "Now send the **Description**:\n"
+            "(Send 'skip' to leave empty)"
+        )
+    
+    elif state == STATE_POST_DESC:
+        if not message.text:
+            await message.reply_text("Please send text.")
+            return
+        
+        desc = message.text
+        if desc.lower() == 'skip':
+            desc = None
+        
+        data['description'] = desc
+        user_states[message.from_user.id] = STATE_POST_DEMO
+        await message.reply_text(
+            "✅ Description Set.\n\n"
+            "Now send the **Demo Link** (URL):\n"
+            "(Send 'skip' to leave empty)"
+        )
+    
+    elif state == STATE_POST_DEMO:
+        if not message.text:
+            await message.reply_text("Please send text.")
+            return
+        
+        demo = message.text
+        if demo.lower() == 'skip':
+            demo = None
+        
+        data['demo_url'] = demo
+        user_states[message.from_user.id] = STATE_POST_FILE
+        await message.reply_text(
+            "✅ Demo Link Set.\n\n"
+            "Finally, send the **File** (Document) to upload:"
+        )
+
+    elif state == STATE_POST_FILE:
+        if not message.document:
+            await message.reply_text("Please send a **Document** file.")
+            return
+        
+        status_msg = await message.reply_text("Processing upload...")
+        
         try:
-            CHANNEL_ID = int(message.text)
+            # 1. Get File ID (It's already uploaded to Telegram servers)
+            file_id = message.document.file_id
+            
+            # 2. Save to Store
+            caption_file = f"{data.get('title')}\n\nUploaded by Bot"
+            code = await file_store.save_file(file_id, caption=caption_file)
+            
+            # 3. Construct Post
+            bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
+            
+            title = data.get('title')
+            description = data.get('description')
+            demo_url = data.get('demo_url')
+            
+            # Reuse stylish caption logic
+            caption = f"🔥 **{title}**\n\n"
+            
+            if description:
+                # Limit description length
+                desc_preview = description[:300] + "..." if len(description) > 300 else description
+                caption += f"📝 **Description**:\n{desc_preview}\n\n"
+            
+            if demo_url:
+                caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
+                
+            caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
+            caption += "🚀 **Join Channel**: @freephplaravel\n"
+            caption += "━━━━━━━━━━━━━━━━━━━━━"
+            
+            if len(caption) > 1024:
+                caption = caption[:1021] + "..."
+                
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Download File 📥", url=bot_link)]
+            ])
+            
+            # 4. Post to Channel
+            if CHANNEL_ID:
+                try:
+                    await client.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=caption,
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True
+                    )
+                    await status_msg.edit_text(f"✅ Posted to channel `{CHANNEL_ID}` successfully!")
+                except Exception as e:
+                    await status_msg.edit_text(f"⚠️ Saved file but failed to post to channel: {e}")
+            else:
+                 await status_msg.edit_text("⚠️ Channel ID not set. File saved but not posted.")
+                 
+            # Cleanup state
             user_states.pop(message.from_user.id, None)
-            await message.reply_text(f"Channel ID set to: `{CHANNEL_ID}`")
-        except ValueError:
-            await message.reply_text("Invalid ID format.")
+            user_data.pop(message.from_user.id, None)
+            
+        except Exception as e:
+            await status_msg.edit_text(f"Error: {e}")
+
 
 import concurrent.futures
 
