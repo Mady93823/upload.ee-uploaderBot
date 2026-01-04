@@ -473,6 +473,18 @@ async def handle_message(client, message):
                                 caption=caption,
                                 reply_markup=keyboard
                             )
+                        elif image_url and "codelist.cc" in image_url:
+                             # If we have a Codelist URL but local processing failed (maybe it's a direct link to a jpg)
+                             # We can try to send it, but it might have the logo.
+                             # Given the user's strict requirement, we should probably SKIP sending it if it has the logo.
+                             # But if we have NOTHING else, maybe sending it is better than nothing?
+                             # The user said "hide codelist logo", so let's stick to text-only if we can't crop.
+                             await client.send_message(
+                                chat_id=CHANNEL_ID,
+                                text=caption,
+                                reply_markup=keyboard,
+                                disable_web_page_preview=True
+                            )
                         else:
                             # Fallback to text-only if we can't get a clean image
                             await client.send_message(

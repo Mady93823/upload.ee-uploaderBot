@@ -289,6 +289,8 @@ def extract_metadata_from_codelist(url, work_dir=None):
         'demo_url': None,
         'upload_ee_url': None,
         'krakenfiles_url': None,
+        'workupload_url': None,
+        'pixeldrain_url': None,
         'description': None
     }
     
@@ -362,6 +364,26 @@ def extract_metadata_from_codelist(url, work_dir=None):
              for a in soup.find_all('a', href=True):
                 if 'krakenfiles.com' in a['href']:
                     metadata['krakenfiles_url'] = a['href']
+                    break
+
+        # 2c. Extract Workupload link
+        matches_wu = re.findall(r'(https?://workupload\.com/file/[^\s"<]+)', response.text)
+        if matches_wu:
+            metadata['workupload_url'] = matches_wu[0]
+        else:
+             for a in soup.find_all('a', href=True):
+                if 'workupload.com/file/' in a['href']:
+                    metadata['workupload_url'] = a['href']
+                    break
+                    
+        # 2d. Extract Pixeldrain link
+        matches_pd = re.findall(r'(https?://pixeldrain\.com/u/[^\s"<]+)', response.text)
+        if matches_pd:
+            metadata['pixeldrain_url'] = matches_pd[0]
+        else:
+             for a in soup.find_all('a', href=True):
+                if 'pixeldrain.com/u/' in a['href']:
+                    metadata['pixeldrain_url'] = a['href']
                     break
 
         # 3. Extract CodeCanyon link to find image
@@ -509,6 +531,102 @@ def repack_to_zip(extract_dir, output_zip_path):
                 zipf.write(file_path, arcname)
     print("Repack complete.")
 
+def process_workupload_url(url, work_dir, progress_callback=None, add_copyright=False):
+    print(f"Processing Workupload URL: {url}")
+    download_dir = os.path.join(work_dir, "downloads")
+    
+    if os.path.exists(download_dir): shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
+
+    try:
+        session = cffi_requests.Session()
+        # 1. Get Page to set cookies
+        resp = session.get(url, impersonate="chrome120")
+        resp.raise_for_status()
+        
+        file_id = url.split('/file/')[-1]
+        download_url = f"https://workupload.com/start/{file_id}"
+        
+        print(f"Download URL: {download_url}")
+        
+        # 2. Download
+        filename = "download.rar"
+        
+        dl_resp = session.get(download_url, stream=True, impersonate="chrome120")
+        dl_resp.raise_for_status()
+        
+        cd = dl_resp.headers.get('content-disposition')
+        if cd:
+            if 'filename="' in cd:
+                filename = cd.split('filename="')[1].split('"')[0]
+            elif 'filename=' in cd:
+                filename = cd.split('filename=')[1].split(';')[0]
+                
+        save_path = os.path.join(download_dir, filename)
+        
+        total_size = int(dl_resp.headers.get('content-length', 0))
+        downloaded_size = 0
+        
+        with open(save_path, 'wb') as f:
+            for chunk in dl_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    if progress_callback and total_size > 0:
+                        progress_callback(downloaded_size, total_size)
+                        
+        print(f"Downloaded to {save_path}")
+        return process_archive(save_path, work_dir, add_copyright)
+
+    except Exception as e:
+        print(f"Workupload processing failed: {e}")
+        return None
+
+def process_pixeldrain_url(url, work_dir, progress_callback=None, add_copyright=False):
+    print(f"Processing Pixeldrain URL: {url}")
+    download_dir = os.path.join(work_dir, "downloads")
+    
+    if os.path.exists(download_dir): shutil.rmtree(download_dir)
+    os.makedirs(download_dir)
+
+    try:
+        # https://pixeldrain.com/u/tn5KZgLz -> https://pixeldrain.com/api/file/tn5KZgLz
+        file_id = url.split('/u/')[-1]
+        download_url = f"https://pixeldrain.com/api/file/{file_id}"
+        print(f"Download URL: {download_url}")
+        
+        session = cffi_requests.Session()
+        dl_resp = session.get(download_url, stream=True, impersonate="chrome120")
+        dl_resp.raise_for_status()
+        
+        filename = "download.rar"
+        cd = dl_resp.headers.get('content-disposition')
+        if cd:
+            if 'filename="' in cd:
+                filename = cd.split('filename="')[1].split('"')[0]
+            elif 'filename=' in cd:
+                filename = cd.split('filename=')[1].split(';')[0]
+                
+        save_path = os.path.join(download_dir, filename)
+        
+        total_size = int(dl_resp.headers.get('content-length', 0))
+        downloaded_size = 0
+        
+        with open(save_path, 'wb') as f:
+            for chunk in dl_resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    if progress_callback and total_size > 0:
+                        progress_callback(downloaded_size, total_size)
+                        
+        print(f"Downloaded to {save_path}")
+        return process_archive(save_path, work_dir, add_copyright)
+
+    except Exception as e:
+        print(f"Pixeldrain processing failed: {e}")
+        return None
+
 def process_krakenfiles_url(url, work_dir, progress_callback=None, add_copyright=False):
     print(f"Processing Krakenfiles URL: {url}")
     download_dir = os.path.join(work_dir, "downloads")
@@ -640,13 +758,29 @@ def process_url(url, work_dir, progress_callback=None, add_copyright=False):
              # Process as Krakenfiles
              zip_path = process_krakenfiles_url(url, work_dir, progress_callback, add_copyright)
              
+        elif metadata and metadata.get('workupload_url'):
+             print(f"Found Workupload URL: {metadata['workupload_url']}")
+             url = metadata['workupload_url']
+             # Process as Workupload
+             zip_path = process_workupload_url(url, work_dir, progress_callback, add_copyright)
+             
+        elif metadata and metadata.get('pixeldrain_url'):
+             print(f"Found Pixeldrain URL: {metadata['pixeldrain_url']}")
+             url = metadata['pixeldrain_url']
+             # Process as Pixeldrain
+             zip_path = process_pixeldrain_url(url, work_dir, progress_callback, add_copyright)
+             
         else:
-            raise Exception("Could not find upload.ee or Krakenfiles link on the provided codelist.cc page.")
+            raise Exception("Could not find supported download link (upload.ee, krakenfiles, workupload, pixeldrain) on the provided codelist.cc page.")
     
     else:
         # Direct link provided (assume upload.ee or krakenfiles)
         if "krakenfiles.com" in url:
             zip_path = process_krakenfiles_url(url, work_dir, progress_callback, add_copyright)
+        elif "workupload.com" in url:
+            zip_path = process_workupload_url(url, work_dir, progress_callback, add_copyright)
+        elif "pixeldrain.com" in url:
+            zip_path = process_pixeldrain_url(url, work_dir, progress_callback, add_copyright)
         else:
             # Process as upload.ee
             zip_path = process_upload_ee_url(url, work_dir, progress_callback, add_copyright)
