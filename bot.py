@@ -11,6 +11,8 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 from processor import process_url
+from curl_cffi import requests as cffi_requests
+from bs4 import BeautifulSoup
 
 # Load environment variables
 load_dotenv()
@@ -149,6 +151,230 @@ async def check_force_sub(client, user_id):
             missing_channels.append(channel_id)
             
     return len(missing_channels) == 0, missing_channels
+
+# --- RSS / Monitor Logic ---
+async def monitor_codelist(client):
+    """
+    Background task to monitor https://codelist.cc/scripts3/ for new posts.
+    """
+    url = "https://codelist.cc/scripts3/"
+    print(f"Starting Monitor for {url}")
+    
+    # Store processed URLs in memory (or DB for persistence)
+    # Ideally, we check the latest DB entry to see what we have last processed.
+    # But for simplicity, we can keep a set of recently seen URLs.
+    # To be robust on restart, we should probably query the DB or just start fresh.
+    # Let's assume on restart we don't want to spam old posts, so we fetch current page 
+    # and mark them as "seen", then only process NEW ones appearing later.
+    
+    seen_urls = set()
+    first_run = True
+    
+    while True:
+        try:
+            logging.info("Checking for new posts...")
+            # Use cffi to bypass potential cloudflare
+            # We can't do async cffi easily without running in executor or using async lib
+            # But run_in_executor is fine for now.
+            
+            loop = asyncio.get_running_loop()
+            
+            def fetch_feed():
+                try:
+                    r = cffi_requests.get(url, impersonate="chrome120", timeout=30)
+                    return r.text
+                except Exception as e:
+                    logging.error(f"Monitor fetch error: {e}")
+                    return None
+
+            html = await loop.run_in_executor(None, fetch_feed)
+            
+            if html:
+                soup = BeautifulSoup(html, 'html.parser')
+                # Find all post links
+                # Usually in .short-story or similar. 
+                # We look for links in /scripts3/ that end in .html
+                
+                current_batch = []
+                for a in soup.find_all('a', href=True):
+                    href = a['href']
+                    if '/scripts3/' in href and '.html' in href:
+                        # Normalize
+                        if href not in current_batch:
+                            current_batch.append(href)
+                
+                # In first run, mark all as seen so we don't repost old stuff
+                if first_run:
+                    seen_urls.update(current_batch)
+                    logging.info(f"Monitor initialized. Marked {len(seen_urls)} posts as seen.")
+                    first_run = False
+                else:
+                    # Check for new ones
+                    # The list is usually ordered new -> old.
+                    # We process them. To preserve order (oldest new -> newest new), we reverse.
+                    
+                    new_posts = [u for u in current_batch if u not in seen_urls]
+                    
+                    if new_posts:
+                        logging.info(f"Found {len(new_posts)} new posts!")
+                        
+                        # Process from oldest to newest if multiple found
+                        for post_url in reversed(new_posts):
+                            logging.info(f"Auto-processing: {post_url}")
+                            
+                            # Create a dummy message object or just call the logic
+                            # We need to simulate the flow: process -> upload -> post to channel
+                            
+                            # We can reuse the core logic if we extract it to a function
+                            # that doesn't depend heavily on 'message' object for status updates
+                            # or we mock it.
+                            
+                            try:
+                                await process_and_post_to_channel(client, post_url)
+                                seen_urls.add(post_url)
+                            except Exception as e:
+                                logging.error(f"Failed to auto-process {post_url}: {e}")
+                                # Don't add to seen if failed? Or add to avoid infinite loop?
+                                # Better add to avoid loop.
+                                seen_urls.add(post_url)
+                                
+                            # Sleep a bit between posts
+                            await asyncio.sleep(10)
+            
+            # Wait 10 minutes before next check
+            await asyncio.sleep(600)
+            
+        except Exception as e:
+            logging.error(f"Monitor loop error: {e}")
+            await asyncio.sleep(600)
+
+async def process_and_post_to_channel(client, url):
+    """
+    Headless version of the processing logic for automation.
+    """
+    work_dir = f"work_auto_{int(time.time())}_{secrets.token_hex(3)}"
+    os.makedirs(work_dir, exist_ok=True)
+    
+    try:
+        logging.info(f"Auto-processing URL: {url}")
+        
+        # 1. Download & Process
+        loop = asyncio.get_running_loop()
+        executor = None # Use default
+        
+        # We don't have a progress callback for auto-mode, or we log it
+        zip_path, metadata = await loop.run_in_executor(
+            executor, 
+            lambda: process_url(url, work_dir, add_copyright=True)
+        )
+        
+        if zip_path and os.path.exists(zip_path):
+            logging.info(f"Processing complete. Uploading {zip_path}...")
+            
+            # 2. Upload to Telegram
+            # We need to send it to the channel directly?
+            # Or store it in DB and post a link? 
+            # The original bot sends a photo to CHANNEL_ID with a button.
+            # The button links to the bot with a start param.
+            # So we need to:
+            # a) Upload document to Telegram (to get file_id) - but we can't "just upload" without sending message?
+            #    Actually we can send to a dump channel or to the admin.
+            #    Or just send to the main channel directly?
+            #    The user's flow is: Channel Post -> Button "Download" -> Bot PM -> File.
+            
+            # So we must upload the file somewhere to get file_id.
+            # We can send it to ADMIN_ID first.
+            
+            caption_file = f"{metadata.get('title', 'File')}\n\nUploaded by Bot"
+            
+            # Upload to Admin to get File ID
+            msg = await client.send_document(
+                chat_id=ADMIN_ID,
+                document=zip_path,
+                caption=caption_file
+            )
+            
+            file_id = msg.document.file_id
+            
+            # 3. Create Store Entry
+            code = await file_store.save_file(file_id, caption=caption_file)
+            bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
+            
+            # 4. Post to Channel
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📥 Download File 📥", url=bot_link)]
+            ])
+            
+            title = metadata.get('title', 'New Script')
+            image_url = metadata.get('image_url')
+            demo_url = metadata.get('demo_url')
+            description = metadata.get('description')
+            
+            # Construct Caption
+            caption = f"✨ **{title}** ✨\n\n"
+            if description:
+                caption += f"{description}\n\n"
+            if demo_url:
+                caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
+            caption += "━━━━━━━━━━━━━━━━━━━\n"
+            caption += "👨‍💻 **By**: @freephplaravel"
+            
+            # Truncate caption if needed (1024 char limit)
+            if len(caption) > 1024:
+                caption = caption[:1021] + "..."
+
+            logging.info(f"Posting to channel {CHANNEL_ID}")
+            
+            if image_url and "codelist.cc" not in image_url:
+                 await client.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=image_url,
+                    caption=caption,
+                    reply_markup=keyboard
+                )
+            elif image_url:
+                # Codelist image (potentially watermarked) - user wanted to hide logo?
+                # We can try to upload the processed local image if available
+                local_img = metadata.get('image_path')
+                if local_img and os.path.exists(local_img):
+                     await client.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=local_img,
+                        caption=caption,
+                        reply_markup=keyboard
+                    )
+                else:
+                    # Fallback to text
+                     await client.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=caption,
+                        reply_markup=keyboard,
+                        disable_web_page_preview=True
+                    )
+            else:
+                 await client.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=caption,
+                    reply_markup=keyboard,
+                    disable_web_page_preview=True
+                )
+            
+            logging.info("Auto-post successful!")
+            
+        else:
+            logging.error("Processing failed (no zip path returned).")
+
+    except Exception as e:
+        logging.error(f"Auto-process error: {e}")
+    finally:
+        # Cleanup
+        if os.path.exists(work_dir):
+            try:
+                shutil.rmtree(work_dir)
+            except:
+                pass
+
+# --- End RSS Logic ---
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
@@ -311,7 +537,27 @@ def get_size(bytes, suffix="B"):
             return f"{bytes:.2f}{unit}{suffix}"
         bytes /= factor
 
-@app.on_message(filters.command("stats"))
+if __name__ == "__main__":
+    logging.info("Starting bot...")
+    
+    # Register the monitor task on startup
+    async def on_start(client):
+        global BOT_USERNAME
+        me = await client.get_me()
+        BOT_USERNAME = me.username
+        logging.info(f"Bot started as @{BOT_USERNAME}")
+        
+        # Start Monitor
+        asyncio.create_task(monitor_codelist(client))
+
+    # We need to use add_handler or standard run
+    # Pyrogram's app.run() blocks. 
+    # To run a background task, we can hook into the 'start' signal or just create task before run if using custom loop
+    # But app.run() creates its own loop.
+    # Best way in Pyrogram: use decorators or client.start() manually.
+    
+    # We will use the start callback
+    @app.on_message(filters.command("stats"))
 async def stats_command(client, message):
     # System Stats
     uname = platform.uname()
@@ -522,6 +768,25 @@ async def handle_message(client, message):
             except Exception as e:
                 logging.error(f"Cleanup failed: {e}")
 
-if __name__ == '__main__':
-    print("Bot is running...")
-    app.run()
+if __name__ == "__main__":
+    # We need to run the bot and the monitor
+    # Pyrogram app.run() is blocking.
+    # We can use idle()
+    from pyrogram import idle
+    
+    async def main():
+        await app.start()
+        
+        me = await app.get_me()
+        global BOT_USERNAME
+        BOT_USERNAME = me.username
+        logging.info(f"Bot started as @{BOT_USERNAME}")
+        
+        # Start Monitor
+        asyncio.create_task(monitor_codelist(app))
+        
+        await idle()
+        await app.stop()
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())

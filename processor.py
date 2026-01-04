@@ -386,82 +386,116 @@ def extract_metadata_from_codelist(url, work_dir=None):
                     metadata['pixeldrain_url'] = a['href']
                     break
 
-        # 3. Extract CodeCanyon link to find image
-        codecanyon_url = None
+        # 3. Extract Demo link (Generic)
+        # Look for "Demo:" text and the following link
+        demo_url = None
+        
+        # Method A: Specific CodeCanyon check (Legacy, but robust for CC)
         for a in soup.find_all('a', href=True):
             if 'codecanyon.net/item' in a['href']:
-                codecanyon_url = a['href']
+                demo_url = a['href']
                 break
         
-        if codecanyon_url:
-            print(f"Found CodeCanyon URL: {codecanyon_url}")
-            # Ensure domain is codecanyon.net
-            if 'www.lolinez.com' in codecanyon_url:
+        # Method B: Generic "Demo:" finder if not found
+        if not demo_url:
+            # Look for text node containing "Demo:"
+            # We search in the entry-content to avoid sidebar noise
+            content_div = soup.find('div', class_='entry-content') or soup
+            
+            # 1. Search for "Demo:" text node
+            demo_text_node = content_div.find(string=lambda t: 'Demo:' in t if t else False)
+            if demo_text_node:
+                # Check siblings for the first link
+                # Sometimes it's immediate sibling, sometimes separated by whitespace
+                
+                # Check next element (<a> tag)
+                next_el = demo_text_node.next_element
+                while next_el and next_el.name != 'a':
+                    next_el = next_el.next_element
+                    # Safety break if we go too far
+                    if next_el and next_el.name in ['br', 'div', 'p']:
+                        break
+                
+                if next_el and next_el.name == 'a' and next_el.get('href'):
+                    demo_url = next_el.get('href')
+                
+                # If that failed, check parent's links (e.g. <span>Demo: <a...></span>)
+                if not demo_url and demo_text_node.parent:
+                    for a in demo_text_node.parent.find_all('a', href=True):
+                        demo_url = a.get('href')
+                        break
+
+        if demo_url:
+            print(f"Found Demo URL: {demo_url}")
+            # Ensure domain is codecanyon.net if it's a lolinez wrapper
+            if 'www.lolinez.com' in demo_url:
                  # Extract the real URL after the query parameter if possible
-                 parts = codecanyon_url.split('?')
-                 if len(parts) > 1 and 'codecanyon.net' in parts[-1]:
-                     codecanyon_url = parts[-1]
-                 else:
-                     codecanyon_url = codecanyon_url.replace('www.lolinez.com', 'codecanyon.net')
+                 parts = demo_url.split('?')
+                 if len(parts) > 1:
+                     # It might be codecanyon or ANY other site now
+                     demo_url = parts[-1]
             
-            metadata['demo_url'] = codecanyon_url
+            metadata['demo_url'] = demo_url
             
-            # Scrape CodeCanyon for image
-            try:
+            # Scrape CodeCanyon for image ONLY if it is actually CodeCanyon
+            if 'codecanyon.net' in demo_url:
+                codecanyon_url = demo_url # Alias for CC scraping
+                try:
                 # Add headers for CodeCanyon
-                cc_headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9"
-                }
-                cc_response = requests.get(codecanyon_url, impersonate="chrome120", headers=cc_headers)
-                cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
-        
-                candidates = []
+                # ... existing CodeCanyon scraping logic ...
+                    cc_headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9"
+                    }
+                    cc_response = requests.get(codecanyon_url, impersonate="chrome120", headers=cc_headers)
+                    cc_soup = BeautifulSoup(cc_response.text, 'html.parser')
+            
+                    candidates = []
 
-                # 1. Open Graph Image (Most reliable)
-                og_image = cc_soup.find('meta', property='og:image')
-                if og_image:
-                    candidates.append(og_image['content'])
+                    # 1. Open Graph Image (Most reliable)
+                    og_image = cc_soup.find('meta', property='og:image')
+                    if og_image:
+                        candidates.append(og_image['content'])
 
-                # 2. Look for specific Envato image classes
-                header_img = cc_soup.find('img', class_='item-header__image')
-                if header_img and header_img.get('src'):
-                     candidates.append(header_img['src'])
-                
-                # 3. Scan all images for envatousercontent
-                for img in cc_soup.find_all('img', src=True):
-                     src = img['src']
-                     if 'envatousercontent.com' in src:
-                         # Exclude obviously small icons if possible by name
-                         if 'avatar' not in src and 'icon' not in src:
-                            candidates.append(src)
-                
-                # Remove duplicates while preserving order
-                unique_candidates = []
-                for c in candidates:
-                    if c not in unique_candidates:
-                        unique_candidates.append(c)
-                
-                candidates = unique_candidates
-                print(f"Found {len(candidates)} image candidates on CodeCanyon.")
-                
-                # Try candidates
-                for img_url in candidates:
-                     if work_dir:
-                         print(f"Processing candidate: {img_url}")
-                         local_path = process_and_save_image(img_url, work_dir, session=None, referer=codecanyon_url)
-                         if local_path:
-                             metadata['image_path'] = local_path
+                    # 2. Look for specific Envato image classes
+                    header_img = cc_soup.find('img', class_='item-header__image')
+                    if header_img and header_img.get('src'):
+                         candidates.append(header_img['src'])
+                    
+                    # 3. Scan all images for envatousercontent
+                    for img in cc_soup.find_all('img', src=True):
+                         src = img['src']
+                         if 'envatousercontent.com' in src:
+                             # Exclude obviously small icons if possible by name
+                             if 'avatar' not in src and 'icon' not in src:
+                                candidates.append(src)
+                    
+                    # Remove duplicates while preserving order
+                    unique_candidates = []
+                    for c in candidates:
+                        if c not in unique_candidates:
+                            unique_candidates.append(c)
+                    
+                    candidates = unique_candidates
+                    print(f"Found {len(candidates)} image candidates on CodeCanyon.")
+                    
+                    # Try candidates
+                    for img_url in candidates:
+                         if work_dir:
+                             print(f"Processing candidate: {img_url}")
+                             local_path = process_and_save_image(img_url, work_dir, session=None, referer=codecanyon_url)
+                             if local_path:
+                                 metadata['image_path'] = local_path
+                                 metadata['image_url'] = img_url
+                                 print(f"Success with CodeCanyon image: {local_path}")
+                                 break
+                         else:
                              metadata['image_url'] = img_url
-                             print(f"Success with CodeCanyon image: {local_path}")
                              break
-                     else:
-                         metadata['image_url'] = img_url
-                         break
 
-            except Exception as e:
-                print(f"Error scraping CodeCanyon: {e}")
+                except Exception as e:
+                    print(f"Error scraping CodeCanyon: {e}")
 
         # Fallback to codelist image if we don't have a valid processed image
         if not metadata['image_path']:
