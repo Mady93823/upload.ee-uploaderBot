@@ -426,11 +426,17 @@ async def handle_message(client, message):
                     image_url = metadata.get('image_url')
                     image_path = metadata.get('image_path')
                     demo_url = metadata.get('demo_url')
+                    description = metadata.get('description')
                     
                     # Cool caption with emojis and demo link
                     caption = f"✨ **{title}** ✨\n\n"
+                    
+                    if description:
+                        caption += f"{description}\n\n"
+                        
                     if demo_url:
                         caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
+                    
                     caption += "━━━━━━━━━━━━━━━━━━━\n"
                     caption += "👨‍💻 **By**: @freephplaravel"
 

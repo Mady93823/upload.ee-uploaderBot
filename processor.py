@@ -287,7 +287,9 @@ def extract_metadata_from_codelist(url, work_dir=None):
         'image_url': None,
         'image_path': None,
         'demo_url': None,
-        'upload_ee_url': None
+        'upload_ee_url': None,
+        'krakenfiles_url': None,
+        'description': None
     }
     
     # Use a session to persist cookies/clearance
@@ -303,6 +305,26 @@ def extract_metadata_from_codelist(url, work_dir=None):
         if title_tag:
             metadata['title'] = title_tag.get_text(strip=True)
             
+        # 1a. Extract Description
+        # Heuristic: Text before "Demo:"
+        full_text = soup.get_text(separator=' ', strip=True)
+        if "Demo:" in full_text:
+             parts = full_text.split("Demo:")
+             if len(parts) > 0:
+                 raw_desc = parts[0].strip()
+                 # Remove metadata (usually ends with "views")
+                 if "views" in raw_desc:
+                     raw_desc = raw_desc.split("views")[-1].strip()
+                 # Clean up any "By admin..." artifacts if "views" wasn't found or didn't catch it
+                 elif "By admin" in raw_desc:
+                     raw_desc = raw_desc.split("By admin")[-1].strip()
+                     
+                 # Take the last logical chunk if it's too long
+                 if len(raw_desc) > 1000:
+                     raw_desc = raw_desc[-1000:]
+                 
+                 metadata['description'] = raw_desc
+
         # 1b. Try to get og:image from Codelist first (often the main post image)
         og_image = soup.find('meta', property='og:image')
         if og_image and og_image.get('content'):
@@ -330,6 +352,16 @@ def extract_metadata_from_codelist(url, work_dir=None):
              for a in soup.find_all('a', href=True):
                 if 'upload.ee' in a['href']:
                     metadata['upload_ee_url'] = a['href']
+                    break
+
+        # 2b. Extract Krakenfiles link
+        matches_kf = re.findall(r'(https?://krakenfiles\.com/view/[^\s"<]+)', response.text)
+        if matches_kf:
+            metadata['krakenfiles_url'] = matches_kf[0]
+        else:
+             for a in soup.find_all('a', href=True):
+                if 'krakenfiles.com' in a['href']:
+                    metadata['krakenfiles_url'] = a['href']
                     break
 
         # 3. Extract CodeCanyon link to find image
@@ -477,6 +509,117 @@ def repack_to_zip(extract_dir, output_zip_path):
                 zipf.write(file_path, arcname)
     print("Repack complete.")
 
+def process_krakenfiles_url(url, work_dir, progress_callback=None, add_copyright=False):
+    print(f"Processing Krakenfiles URL: {url}")
+    download_dir = os.path.join(work_dir, "downloads")
+    extract_dir = os.path.join(work_dir, "extracted")
+    
+    if os.path.exists(download_dir): shutil.rmtree(download_dir)
+    if os.path.exists(extract_dir): shutil.rmtree(extract_dir)
+    
+    os.makedirs(download_dir)
+    os.makedirs(extract_dir)
+
+    try:
+        try:
+            from pykraken.kraken import Kraken
+        except ImportError:
+            raise Exception("py-kraken module not found. Please run 'pip install py-kraken'")
+
+        k = Kraken()
+        # py-kraken logic
+        # It seems py-kraken might need 'requests' but we have it.
+        # k.get_download_link(url) returns the force-download url
+        
+        print("Getting download link via py-kraken...")
+        download_url = k.get_download_link(url)
+        
+        if not download_url:
+             raise Exception("py-kraken returned None for download link.")
+             
+        print(f"Download URL: {download_url}")
+        
+        # Download using our robust downloader
+        filename = "download.rar" # Default
+        # Try to extract filename from URL if possible or just use default
+        
+        save_path = os.path.join(download_dir, filename)
+        
+        # Use our download_file function which handles retries and headers
+        # Note: force-download might not need referer, but adding it doesn't hurt
+        if not download_file(download_url, save_path, progress_callback=progress_callback):
+             raise Exception("Download failed.")
+             
+        # Check if file is valid (not html error page)
+        if os.path.exists(save_path) and os.path.getsize(save_path) < 1000:
+             # Read content to check for error
+             with open(save_path, 'rb') as f:
+                 content = f.read(200)
+                 print(f"File too small. Content: {content}")
+             raise Exception("Downloaded file is too small (likely error page).")
+
+        return process_archive(save_path, work_dir, add_copyright)
+
+    except Exception as e:
+        print(f"Krakenfiles processing failed: {e}")
+        return None
+
+def process_archive(rar_path, work_dir, add_copyright=False):
+    extract_dir = os.path.join(work_dir, "extracted")
+    if not os.path.exists(extract_dir):
+        os.makedirs(extract_dir)
+
+    print(f"Extracting {rar_path}...")
+    extraction_success = False
+    error_msg = ""
+    
+    # Priority 1: Try unrar
+    if shutil.which('unrar'):
+        print("Using unrar...")
+        cmd_unrar = ['unrar', 'x', '-y', '-p-', rar_path, extract_dir]
+        res_unrar = subprocess.run(cmd_unrar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res_unrar.returncode == 0:
+            extraction_success = True
+            print("Unrar successful.")
+        else:
+            error_msg = res_unrar.stderr.decode('utf-8', errors='ignore')
+            print(f"Unrar failed: {error_msg}")
+    
+    # Priority 2: Try 7-Zip
+    if not extraction_success:
+        seven_zip = setup_tools()
+        if seven_zip:
+            print(f"Using {seven_zip}...")
+            cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y', '-p-']
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if res.returncode == 0:
+                extraction_success = True
+                print("7-Zip extraction successful.")
+            else:
+                current_err = res.stderr.decode('utf-8', errors='ignore')
+                error_msg += f" | 7-Zip failed: {current_err}"
+                print(f"7-Zip extraction failed: {current_err}")
+        else:
+             error_msg += " | 7-Zip tool missing."
+             
+    if not extraction_success:
+        raise Exception(f"Extraction failed. Ensure 'unrar' or 'p7zip-rar' is installed. Details: {error_msg}")
+        
+    # Clean
+    clean_files(extract_dir)
+    
+    # Add Copyright Files
+    if add_copyright:
+        add_copyright_files(extract_dir)
+    
+    # Repack
+    filename = os.path.basename(rar_path)
+    output_name = f"{os.path.splitext(filename)[0]}_cleaned.zip"
+    output_path = os.path.join(work_dir, output_name)
+    repack_to_zip(extract_dir, output_path)
+    
+    return output_path
+
 def process_url(url, work_dir, progress_callback=None, add_copyright=False):
     metadata = None
     
@@ -484,13 +627,29 @@ def process_url(url, work_dir, progress_callback=None, add_copyright=False):
     if "codelist.cc" in url:
         print("Detected codelist.cc URL. Extracting metadata...")
         metadata = extract_metadata_from_codelist(url, work_dir)
-        if not metadata or not metadata['upload_ee_url']:
-            raise Exception("Could not find upload.ee link on the provided codelist.cc page.")
-        print(f"Found upload.ee URL: {metadata['upload_ee_url']}")
-        url = metadata['upload_ee_url']
+        
+        if metadata and metadata.get('upload_ee_url'):
+             print(f"Found upload.ee URL: {metadata['upload_ee_url']}")
+             url = metadata['upload_ee_url']
+             # Process as upload.ee
+             zip_path = process_upload_ee_url(url, work_dir, progress_callback, add_copyright)
+             
+        elif metadata and metadata.get('krakenfiles_url'):
+             print(f"Found Krakenfiles URL: {metadata['krakenfiles_url']}")
+             url = metadata['krakenfiles_url']
+             # Process as Krakenfiles
+             zip_path = process_krakenfiles_url(url, work_dir, progress_callback, add_copyright)
+             
+        else:
+            raise Exception("Could not find upload.ee or Krakenfiles link on the provided codelist.cc page.")
     
-    # Process as upload.ee
-    zip_path = process_upload_ee_url(url, work_dir, progress_callback, add_copyright)
+    else:
+        # Direct link provided (assume upload.ee or krakenfiles)
+        if "krakenfiles.com" in url:
+            zip_path = process_krakenfiles_url(url, work_dir, progress_callback, add_copyright)
+        else:
+            # Process as upload.ee
+            zip_path = process_upload_ee_url(url, work_dir, progress_callback, add_copyright)
     
     return zip_path, metadata
 
@@ -515,58 +674,8 @@ def process_upload_ee_url(url, work_dir, progress_callback=None, add_copyright=F
     if not download_file(direct_link, rar_path, progress_callback=progress_callback):
         raise Exception("Download failed.")
         
-    # 3. Extract
-    print(f"Extracting {rar_path}...")
-    extraction_success = False
-    error_msg = ""
-    
-    # Priority 1: Try unrar first (most reliable for RAR5/proprietary formats)
-    if shutil.which('unrar'):
-        print("Using unrar...")
-        # unrar x -y -p- <file> <dest>
-        cmd_unrar = ['unrar', 'x', '-y', '-p-', rar_path, extract_dir]
-        res_unrar = subprocess.run(cmd_unrar, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if res_unrar.returncode == 0:
-            extraction_success = True
-            print("Unrar successful.")
-        else:
-            error_msg = res_unrar.stderr.decode('utf-8', errors='ignore')
-            print(f"Unrar failed: {error_msg}")
-    
-    # Priority 2: Try 7-Zip if unrar failed or is missing
-    if not extraction_success:
-        seven_zip = setup_tools()
-        if seven_zip:
-            print(f"Using {seven_zip}...")
-            # 7z x <file> -o<dest> -y -p-
-            cmd = [seven_zip, 'x', rar_path, f'-o{extract_dir}', '-y', '-p-']
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if res.returncode == 0:
-                extraction_success = True
-                print("7-Zip extraction successful.")
-            else:
-                current_err = res.stderr.decode('utf-8', errors='ignore')
-                error_msg += f" | 7-Zip failed: {current_err}"
-                print(f"7-Zip extraction failed: {current_err}")
-        else:
-             error_msg += " | 7-Zip tool missing."
-             
-    if not extraction_success:
-        raise Exception(f"Extraction failed. Ensure 'unrar' or 'p7zip-rar' is installed. Details: {error_msg}")
-        
-    # 4. Clean
-    clean_files(extract_dir)
-    
-    # 5. Add Copyright Files
-    if add_copyright:
-        add_copyright_files(extract_dir)
-    
-    # 6. Repack
-    output_name = f"{os.path.splitext(filename)[0]}_cleaned.zip"
-    output_path = os.path.join(work_dir, output_name)
-    repack_to_zip(extract_dir, output_path)
-    
-    return output_path
+    # 3. Process Archive
+    return process_archive(rar_path, work_dir, add_copyright)
 
 if __name__ == "__main__":
     pass
