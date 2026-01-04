@@ -38,6 +38,11 @@ MONGO_URI = os.getenv("MONGO_URI")
 JOIN_CHANNELS = os.getenv("JOIN_CHANNELS", "")
 FORCE_SUB_CHANNELS = [int(x) for x in JOIN_CHANNELS.split() if x.strip().lstrip('-').isdigit()]
 
+# Global Toggles
+MONITOR_ACTIVE = True
+MAINTENANCE_MODE = False
+FORCE_SUB_ACTIVE = True
+
 BOT_USERNAME = None
 
 if not all([TOKEN, API_ID, API_HASH, MONGO_URI]):
