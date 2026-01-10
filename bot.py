@@ -546,6 +546,11 @@ async def handle_message(client, message):
 
     url = message.text.strip()
 
+    # Let plugins handle CodeCanyon links
+    if "codecanyon.net" in url:
+        message.continue_propagation()
+        return
+
     if "upload.ee" not in url and "codelist.cc" not in url:
         # If it's a private chat and not a valid link, we might want to ignore or guide
         # But previously we replied "Please send a valid link".

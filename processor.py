@@ -35,14 +35,10 @@ def search_codelist(query):
             a_tag = title_entry.find('a', href=True)
             if a_tag:
                 return a_tag['href']
-                
-        # Fallback for different themes or layouts
-        # Look for any post link that looks like a content page
-        for a in soup.find_all('a', href=True):
-             href = a['href']
-             if any(x in href for x in ['/scripts3/', '/plugins3/', '/mobile/', '/templates/']) and 'codelist.cc' in href:
-                 return href
-                 
+        
+        # Removed aggressive fallback to avoid returning sidebar/footer links (e.g. Popular Posts)
+        # when the actual search returns no results.
+        
         return None
     except Exception as e:
         print(f"Search error: {e}")

@@ -27,10 +27,10 @@ def check_rate_limit(user_id: int) -> bool:
     user_last_request[user_id] = now
     return True
 
-@Client.on_message(filters.group & filters.text & ~filters.forwarded)
+@Client.on_message((filters.group | filters.private) & filters.text & ~filters.forwarded)
 async def handle_codecanyon_link(client: Client, message: Message):
     """
-    Monitors group chats for CodeCanyon links.
+    Monitors chats for CodeCanyon links.
     1. Verifies user.
     2. Checks DB for existing content.
     3. Searches & Uploads if new.
@@ -46,6 +46,10 @@ async def handle_codecanyon_link(client: Client, message: Message):
     # Matches: https://codecanyon.net/item/item-name/123456
     match = re.search(r'(https?://(?:www\.)?codecanyon\.net/item/[^/\s]+/\d+)', text)
     if not match:
+        # If it's a private chat and NOT a CodeCanyon link, we let bot.py handle it
+        # (which handles upload.ee/codelist.cc links)
+        if message.chat.type == "private":
+            message.continue_propagation()
         return
 
     # Rate Limit Check
