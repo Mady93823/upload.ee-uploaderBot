@@ -14,32 +14,61 @@ from curl_cffi import requests
 def search_codelist(query):
     """
     Search codelist.cc for a query and return the first result URL.
+    Uses DLE search endpoint (POST).
     """
-    search_url = f"https://codelist.cc/?s={query}"
+    search_url = "https://codelist.cc/index.php?do=search"
+    params = {
+        "subaction": "search",
+        "story": query
+    }
+    
     try:
-        r = requests.get(search_url, impersonate="chrome120", timeout=30)
+        # Use POST for DLE search
+        r = requests.post(search_url, data=params, impersonate="chrome120", timeout=30)
         if r.status_code != 200:
             return None
-            
+        
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # Parse search results
-        # Usually they are in <div class="post-listing"> or similar.
-        # Let's find the first <article> or entry.
+        # 1. Look for articles with the new structure
+        # <h3 class="post__title"> <a href="...">Title</a> </h3>
         
-        # Codelist structure check:
-        # <h2 class="post-titleEntry"> <a href="...">Title</a> </h2>
+        results = []
         
-        title_entry = soup.find('h2', class_='post-titleEntry')
-        if title_entry:
-            a_tag = title_entry.find('a', href=True)
-            if a_tag:
-                return a_tag['href']
+        # Method A: Standard Search Results
+        for article in soup.find_all('article'):
+            title_h3 = article.find('h3', class_='post__title')
+            if title_h3:
+                a_tag = title_h3.find('a', href=True)
+                if a_tag:
+                    results.append((a_tag.get_text(strip=True), a_tag['href']))
         
-        # Removed aggressive fallback to avoid returning sidebar/footer links (e.g. Popular Posts)
-        # when the actual search returns no results.
+        # Method B: Fallback (older themes or different views)
+        if not results:
+            for h2 in soup.find_all('h2', class_='post-titleEntry'):
+                a_tag = h2.find('a', href=True)
+                if a_tag:
+                    results.append((a_tag.get_text(strip=True), a_tag['href']))
+        
+        # Filter results for relevance
+        # If we have results, check if they actually contain the query keywords
+        # This prevents returning "Latest Posts" when search yields nothing
+        
+        query_words = query.lower().split()
+        # Use first few meaningful words for strict checking
+        # e.g. "Wowy - Multi-language" -> check for "wowy"
+        key_word = query_words[0] if query_words else ""
+        
+        for title, url in results:
+            if key_word in title.lower():
+                return url
+                
+        # If no strict match, but we have results and the query was long, 
+        # maybe return the first one if it shares *some* words?
+        # For now, let's be strict to avoid bad matches.
         
         return None
+
     except Exception as e:
         print(f"Search error: {e}")
         return None

@@ -77,8 +77,16 @@ async def handle_codecanyon_link(client: Client, message: Message):
     try:
         # 3. Search Codelist.cc for the item
         loop = asyncio.get_running_loop()
-        # Run synchronous search in executor to avoid blocking the event loop
+        
+        # Strategy 1: Search with full extracted name
         codelist_url = await loop.run_in_executor(None, search_codelist, item_name)
+        
+        # Strategy 2: Search with Brand Name (First word) if full search fails
+        if not codelist_url and item_name:
+            brand_name = item_name.split()[0]
+            if len(brand_name) > 3: # Only if brand name is significant
+                await status_msg.edit_text(f"🔎 Checking database for: **{brand_name}**...")
+                codelist_url = await loop.run_in_executor(None, search_codelist, brand_name)
         
         if not codelist_url:
             await status_msg.edit_text("❌ **Item not found in our sources.**\n\nWe will add it to our request list.")
