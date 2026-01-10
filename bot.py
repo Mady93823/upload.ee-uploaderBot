@@ -3,22 +3,22 @@ import logging
 import asyncio
 import time
 import shutil
-import secrets
 import psutil
 import platform
 import sys
 import datetime
 import re
-import motor.motor_asyncio
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from dotenv import load_dotenv
 from processor import process_url
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 
-# Load environment variables
-load_dotenv()
+# New Imports
+from config import *
+from database import file_store
+from utils import ProgressTracker, check_force_sub, process_and_post_to_channel
 
 # Logging setup
 logging.basicConfig(
@@ -27,170 +27,20 @@ logging.basicConfig(
 )
 
 BOT_START_TIME = time.time()
-
-# Configuration from env
-TOKEN = os.getenv("TOKEN")
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-ADMIN_ID = os.getenv("ADMIN_ID")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-MONGO_URI = os.getenv("MONGO_URI")
-JOIN_CHANNELS = os.getenv("JOIN_CHANNELS", "")
-FORCE_SUB_CHANNELS = [int(x) for x in JOIN_CHANNELS.split() if x.strip().lstrip('-').isdigit()]
-
-# Global Toggles
-MONITOR_ACTIVE = True
-MAINTENANCE_MODE = False
-FORCE_SUB_ACTIVE = True
-
-# RSS Stats
-RSS_STATS = {
-    "last_check": "Never",
-    "total_found": 0,
-    "total_processed": 0
-}
-
 BOT_USERNAME = None
 
 if not all([TOKEN, API_ID, API_HASH, MONGO_URI]):
     logging.error("Missing configuration. Please check your .env file or environment variables.")
     exit(1)
 
-try:
-    API_ID = int(API_ID)
-    if ADMIN_ID:
-        ADMIN_ID = int(ADMIN_ID)
-    if CHANNEL_ID:
-        CHANNEL_ID = int(CHANNEL_ID)
-except ValueError:
-    logging.error("API_ID, ADMIN_ID and CHANNEL_ID must be integers.")
-    exit(1)
-
-# --- Database Helper ---
-class MongoFileStore:
-    def __init__(self, uri):
-        # Optimized connection pooling
-        self.client = motor.motor_asyncio.AsyncIOMotorClient(
-            uri,
-            maxPoolSize=100,
-            minPoolSize=10,
-            serverSelectionTimeoutMS=5000
-        )
-        self.db = self.client.codelist_bot
-        self.collection = self.db.CODELIST
-        self.users = self.db.USERS
-        self.processed = self.db.PROCESSED_POSTS
-
-    async def add_user(self, user_id, first_name):
-        await self.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"user_id": user_id, "first_name": first_name, "last_active": datetime.datetime.now()}},
-            upsert=True
-        )
-
-    async def is_url_processed(self, url):
-        return await self.processed.find_one({"url": url})
-
-    async def add_processed_url(self, url):
-        await self.processed.update_one(
-            {"url": url},
-            {"$set": {"url": url, "processed_at": datetime.datetime.now()}},
-            upsert=True
-        )
-
-    async def get_total_users(self):
-        return await self.users.count_documents({})
-
-    async def get_all_users(self):
-        return self.users.find({})
-
-    async def save_file(self, file_id, caption=None):
-        # Generate a unique 8-char code
-        while True:
-            code = secrets.token_urlsafe(6)
-            existing = await self.collection.find_one({"code": code})
-            if not existing:
-                break
-        
-        await self.collection.insert_one({
-            "code": code,
-            "file_id": file_id,
-            "caption": caption,
-            "created_at": time.time()
-        })
-        return code
-
-    async def get_file(self, code):
-        return await self.collection.find_one({"code": code})
-
-file_store = MongoFileStore(MONGO_URI)
-
-# Initialize Pyrogram Client
+# Initialize Pyrogram Client with Plugins
 app = Client(
     "codelist_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=TOKEN
+    bot_token=TOKEN,
+    plugins=dict(root="plugins")
 )
-
-# Progress tracking helper
-class ProgressTracker:
-    def __init__(self, message: Message, operation: str):
-        self.message = message
-        self.operation = operation
-        self.last_update_time = 0
-        self.start_time = time.time()
-
-    async def update(self, current, total):
-        now = time.time()
-        if now - self.last_update_time < 3 and current != total:
-            return
-
-        self.last_update_time = now
-        percentage = (current / total) * 100
-        
-        # Simple progress bar
-        filled = int(percentage / 10)
-        bar = "█" * filled + "░" * (10 - filled)
-        
-        # Calculate speed
-        elapsed = now - self.start_time
-        if elapsed > 0:
-            speed = current / elapsed
-            speed_str = f"{speed / 1024 / 1024:.2f} MB/s"
-        else:
-            speed_str = "0 MB/s"
-
-        text = (
-            f"**{self.operation}**\n"
-            f"[{bar}] {percentage:.1f}%\n"
-            f"🚀 **Speed**: {speed_str}\n"
-            f"📦 **Size**: {current / 1024 / 1024:.2f} / {total / 1024 / 1024:.2f} MB"
-        )
-        
-        try:
-            await self.message.edit_text(text)
-        except Exception as e:
-            logging.error(f"Error updating progress: {e}")
-
-# Force Sub Check Helper
-async def check_force_sub(client, user_id):
-    if not FORCE_SUB_CHANNELS:
-        return True, []
-        
-    missing_channels = []
-    for channel_id in FORCE_SUB_CHANNELS:
-        try:
-            member = await client.get_chat_member(channel_id, user_id)
-            if member.status in ["left", "kicked", "banned"]:
-                missing_channels.append(channel_id)
-        except Exception:
-            # If bot can't check (not admin or channel invalid), assume user is not in it or skip
-            # Better to assume missing if we want to be strict, or skip if we want to be safe.
-            # Let's add it to missing so they see the button and try.
-            missing_channels.append(channel_id)
-            
-    return len(missing_channels) == 0, missing_channels
 
 # --- RSS / Monitor Logic ---
 async def monitor_codelist(client):
@@ -281,7 +131,7 @@ async def monitor_codelist(client):
                     for post_url in reversed(new_posts):
                         logging.info(f"Auto-processing: {post_url}")
                         try:
-                            await process_and_post_to_channel(client, post_url)
+                            await process_and_post_to_channel(client, post_url, BOT_USERNAME)
                             # Mark as processed ONLY after success (or attempt)
                             await file_store.add_processed_url(post_url)
                             RSS_STATS["total_processed"] += 1
@@ -298,139 +148,6 @@ async def monitor_codelist(client):
             logging.error(f"Monitor loop error: {e}")
             await asyncio.sleep(600)
 
-async def process_and_post_to_channel(client, url):
-    """
-    Headless version of the processing logic for automation.
-    """
-    work_dir = f"work_auto_{int(time.time())}_{secrets.token_hex(3)}"
-    os.makedirs(work_dir, exist_ok=True)
-    
-    try:
-        logging.info(f"Auto-processing URL: {url}")
-        
-        # 1. Download & Process
-        loop = asyncio.get_running_loop()
-        executor = None # Use default
-        
-        # We don't have a progress callback for auto-mode, or we log it
-        zip_path, metadata = await loop.run_in_executor(
-            executor, 
-            lambda: process_url(url, work_dir, add_copyright=True)
-        )
-        
-        if zip_path and os.path.exists(zip_path):
-            logging.info(f"Processing complete. Uploading {zip_path}...")
-            
-            # 2. Upload to Telegram
-            # We need to send it to the channel directly?
-            # Or store it in DB and post a link? 
-            # The original bot sends a photo to CHANNEL_ID with a button.
-            # The button links to the bot with a start param.
-            # So we need to:
-            # a) Upload document to Telegram (to get file_id) - but we can't "just upload" without sending message?
-            #    Actually we can send to a dump channel or to the admin.
-            #    Or just send to the main channel directly?
-            #    The user's flow is: Channel Post -> Button "Download" -> Bot PM -> File.
-            
-            # So we must upload the file somewhere to get file_id.
-            # We can send it to ADMIN_ID first.
-            
-            caption_file = f"{metadata.get('title', 'File')}\n\nUploaded by Bot"
-            
-            # Upload to Admin to get File ID
-            msg = await client.send_document(
-                chat_id=ADMIN_ID,
-                document=zip_path,
-                caption=caption_file
-            )
-            
-            file_id = msg.document.file_id
-            
-            # 3. Create Store Entry
-            code = await file_store.save_file(file_id, caption=caption_file)
-            bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
-            
-            # 4. Post to Channel
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📥 Download File 📥", url=bot_link)]
-            ])
-            
-            title = metadata.get('title', 'New Script')
-            image_url = metadata.get('image_url')
-            demo_url = metadata.get('demo_url')
-            description = metadata.get('description')
-            
-            # Stylish Caption
-            caption = f"🔥 **{title}**\n\n"
-            
-            if description:
-                # Limit description length to avoid clutter
-                desc_preview = description[:300] + "..." if len(description) > 300 else description
-                caption += f"📝 **Description**:\n{desc_preview}\n\n"
-            
-            if demo_url:
-                caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
-                
-            caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
-            caption += "� **Join Channel**: @freephplaravel\n"
-            caption += "━━━━━━━━━━━━━━━━━━━━━"
-            
-            # Truncate caption if needed (1024 char limit)
-            if len(caption) > 1024:
-                caption = caption[:1021] + "..."
-
-            logging.info(f"Posting to channel {CHANNEL_ID}")
-            
-            if image_url and "codelist.cc" not in image_url:
-                 await client.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=image_url,
-                    caption=caption,
-                    reply_markup=keyboard
-                )
-            elif image_url:
-                # Codelist image (potentially watermarked) - user wanted to hide logo?
-                # We can try to upload the processed local image if available
-                local_img = metadata.get('image_path')
-                if local_img and os.path.exists(local_img):
-                     await client.send_photo(
-                        chat_id=CHANNEL_ID,
-                        photo=local_img,
-                        caption=caption,
-                        reply_markup=keyboard
-                    )
-                else:
-                    # Fallback to text
-                     await client.send_message(
-                        chat_id=CHANNEL_ID,
-                        text=caption,
-                        reply_markup=keyboard,
-                        disable_web_page_preview=True
-                    )
-            else:
-                 await client.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=caption,
-                    reply_markup=keyboard,
-                    disable_web_page_preview=True
-                )
-            
-            logging.info("Auto-post successful!")
-            
-        else:
-            logging.error("Processing failed (no zip path returned).")
-
-    except Exception as e:
-        logging.error(f"Auto-process error: {e}")
-    finally:
-        # Cleanup
-        if os.path.exists(work_dir):
-            try:
-                shutil.rmtree(work_dir)
-            except:
-                pass
-
-# --- End RSS Logic ---
 
 @app.on_message(filters.command("start"))
 async def start(client, message):
@@ -451,7 +168,7 @@ async def start(client, message):
         
         # Force Subscribe Check
         if FORCE_SUB_ACTIVE:
-            is_joined, missing_channels = await check_force_sub(client, message.from_user.id)
+            is_joined, missing_channels = await check_force_sub(client, message.from_user.id, FORCE_SUB_CHANNELS)
             if not is_joined:
                 buttons = []
                 for channel_id in missing_channels:
@@ -548,125 +265,30 @@ async def settings_command(client, message):
         ],
         [
             InlineKeyboardButton("📢 Broadcast", callback_data="broadcast_info"),
-            InlineKeyboardButton("📄 Get Logs", callback_data="get_logs")
-        ],
-        [
-            InlineKeyboardButton("🔄 Restart Bot", callback_data="restart_bot")
+            InlineKeyboardButton("🔄 Restart", callback_data="restart_bot")
         ]
     ])
     
     await message.reply_text(text, reply_markup=buttons)
 
-@app.on_callback_query(filters.regex("toggle_") & filters.user(ADMIN_ID))
-async def handle_toggles(client, callback_query: CallbackQuery):
-    global MONITOR_ACTIVE, MAINTENANCE_MODE, FORCE_SUB_ACTIVE
-    data = callback_query.data
-    
-    if data == "toggle_monitor":
-        MONITOR_ACTIVE = not MONITOR_ACTIVE
-    elif data == "toggle_maintenance":
-        MAINTENANCE_MODE = not MAINTENANCE_MODE
-    elif data == "toggle_force_sub":
-        FORCE_SUB_ACTIVE = not FORCE_SUB_ACTIVE
-        
-    # Refresh Panel
+# Callbacks for settings
+@app.on_callback_query(filters.regex("toggle_monitor") & filters.user(ADMIN_ID))
+async def toggle_monitor(client, callback_query: CallbackQuery):
+    global MONITOR_ACTIVE
+    MONITOR_ACTIVE = not MONITOR_ACTIVE
     await settings_command(client, callback_query.message)
 
-@app.on_callback_query(filters.regex("broadcast_info") & filters.user(ADMIN_ID))
-async def broadcast_info(client, callback_query: CallbackQuery):
-    await callback_query.answer("Use /broadcast <message> to send to all users.", show_alert=True)
+@app.on_callback_query(filters.regex("toggle_maintenance") & filters.user(ADMIN_ID))
+async def toggle_maintenance(client, callback_query: CallbackQuery):
+    global MAINTENANCE_MODE
+    MAINTENANCE_MODE = not MAINTENANCE_MODE
+    await settings_command(client, callback_query.message)
 
-@app.on_callback_query(filters.regex("get_logs") & filters.user(ADMIN_ID))
-async def get_logs_callback(client, callback_query: CallbackQuery):
-    await callback_query.answer("Sending logs...")
-    if os.path.exists("bot.log"):
-        await client.send_document(
-            chat_id=ADMIN_ID,
-            document="bot.log",
-            caption="📄 **Bot Logs**"
-        )
-    else:
-        await client.send_message(ADMIN_ID, "❌ No log file found.")
-
-@app.on_callback_query(filters.regex("restart_bot") & filters.user(ADMIN_ID))
-async def restart_bot_callback(client, callback_query: CallbackQuery):
-    await callback_query.answer("Restarting...", show_alert=True)
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-@app.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
-async def broadcast_command(client, message):
-    if len(message.command) < 2:
-        await message.reply_text("⚠️ Usage: `/broadcast <message>`")
-        return
-        
-    text = message.text.split(None, 1)[1]
-    total_users = await file_store.get_total_users()
-    
-    status_msg = await message.reply_text(f"📢 Starting broadcast to {total_users} users...")
-    
-    success = 0
-    failed = 0
-    
-    # Get all users (cursor)
-    cursor = await file_store.get_all_users()
-    
-    async for user in cursor:
-        try:
-            await client.send_message(user['user_id'], text)
-            success += 1
-            await asyncio.sleep(0.1) # Flood wait prevention
-        except Exception:
-            failed += 1
-            
-    await status_msg.edit_text(
-        f"✅ **Broadcast Complete**\n\n"
-        f"✨ Success: `{success}`\n"
-        f"❌ Failed: `{failed}`"
-    )
-
-@app.on_message(filters.command("logs") & filters.user(ADMIN_ID))
-async def logs_command(client, message):
-    if os.path.exists("bot.log"):
-        await message.reply_document("bot.log", caption="📄 **Bot Logs**")
-    else:
-        await message.reply_text("❌ No log file found.")
-
-@app.on_message(filters.command("users") & filters.user(ADMIN_ID))
-async def users_command(client, message):
-    total_users = await file_store.get_total_users()
-    await message.reply_text(f"👥 **Total Users**: `{total_users}`")
-
-@app.on_message(filters.command("restart") & filters.user(ADMIN_ID))
-async def restart_command(client, message):
-    await message.reply_text("🔄 Restarting bot...")
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-@app.on_message(filters.command("check_channel") & filters.user(ADMIN_ID))
-async def check_channel_command(client, message):
-    if not CHANNEL_ID:
-        await message.reply_text("Channel ID is not set.")
-        return
-        
-    status_msg = await message.reply_text(f"Checking channel `{CHANNEL_ID}`...")
-    try:
-        chat = await client.get_chat(CHANNEL_ID)
-        text = f"✅ Channel found: **{chat.title}**\nType: `{chat.type}`\nID: `{chat.id}`\n\n"
-        
-        member = await client.get_chat_member(CHANNEL_ID, "me")
-        text += f"Bot Status: `{member.status}`\n"
-        
-        if member.privileges:
-             text += f"Can Post: `{member.privileges.can_post_messages}`\n"
-             text += f"Can Edit: `{member.privileges.can_edit_messages}`\n"
-        
-        if str(member.status) not in ["ChatMemberStatus.ADMINISTRATOR", "administrator", "creator"]:
-             text += "\n⚠️ **Warning**: Bot is NOT an admin. Auto-post will fail."
-             
-        await status_msg.edit_text(text)
-        
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Error connecting to channel: {e}\n\nMake sure the bot is added to the channel.")
-
+@app.on_callback_query(filters.regex("toggle_force_sub") & filters.user(ADMIN_ID))
+async def toggle_force_sub(client, callback_query: CallbackQuery):
+    global FORCE_SUB_ACTIVE
+    FORCE_SUB_ACTIVE = not FORCE_SUB_ACTIVE
+    await settings_command(client, callback_query.message)
 
 # State management for setting channel (simple in-memory)
 user_states = {}
@@ -710,8 +332,6 @@ async def handle_forward_for_channel(client, message):
     if state == STATE_WAIT_CHANNEL:
         if message.forward_from_chat and message.forward_from_chat.type == "channel":
             CHANNEL_ID = message.forward_from_chat.id
-            # Update .env (optional, but good for persistence in local dev)
-            # For cloud (koyeb), this won't persist restarts usually unless using API
             user_states.pop(message.from_user.id, None)
             await message.reply_text(f"Channel ID set to: `{CHANNEL_ID}`")
         else:
@@ -796,7 +416,7 @@ async def handle_admin_states(client, message):
         status_msg = await message.reply_text("Processing upload...")
         
         try:
-            # 1. Get File ID (It's already uploaded to Telegram servers)
+            # 1. Get File ID
             file_id = message.document.file_id
             
             # 2. Save to Store
@@ -804,23 +424,24 @@ async def handle_admin_states(client, message):
             code = await file_store.save_file(file_id, caption=caption_file)
             
             # 3. Construct Post
+            global BOT_USERNAME
+            if not BOT_USERNAME:
+                 me = await client.get_me()
+                 BOT_USERNAME = me.username
+
             bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
             
             title = data.get('title')
             description = data.get('description')
             demo_url = data.get('demo_url')
             
-            # Reuse stylish caption logic
+            # Stylish Caption
             caption = f"🔥 **{title}**\n\n"
-            
             if description:
-                # Limit description length
                 desc_preview = description[:300] + "..." if len(description) > 300 else description
                 caption += f"📝 **Description**:\n{desc_preview}\n\n"
-            
             if demo_url:
                 caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
-                
             caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
             caption += "🚀 **Join Channel**: @freephplaravel\n"
             caption += "━━━━━━━━━━━━━━━━━━━━━"
@@ -853,7 +474,6 @@ async def handle_admin_states(client, message):
             
         except Exception as e:
             await status_msg.edit_text(f"Error: {e}")
-
 
 import concurrent.futures
 
@@ -916,12 +536,19 @@ async def stats_command(client, message):
 
 # --- Main Logic ---
 
-@app.on_message(filters.text & ~filters.command(["start", "settings", "stats"]))
+@app.on_message(filters.text & ~filters.command(["start", "settings", "stats", "post", "cancel"]))
 async def handle_message(client, message):
+    # Ignore group messages here, let plugins handle groups.
+    # We only want to process PMs or specific commands unless explicitly handled.
+    if message.chat.type != "private":
+        message.continue_propagation()
+        return
+
     url = message.text.strip()
-    
 
     if "upload.ee" not in url and "codelist.cc" not in url:
+        # If it's a private chat and not a valid link, we might want to ignore or guide
+        # But previously we replied "Please send a valid link".
         await message.reply_text("Please send a valid link.")
         return
 
@@ -948,14 +575,8 @@ async def handle_message(client, message):
         loop = asyncio.get_running_loop()
         
         # Determine if we should add copyright files (only for admin autopost?)
-        # For now, let's say only add copyright if explicit command or always?
-        # User requested to just upload, but in auto-mode we added copyright.
-        # Let's keep manual mode clean unless specified.
         add_copyright = False # Default manual
         
-        # We can add a flag logic if needed later
-        
-        # Run processing in executor to avoid blocking
         executor = None 
         zip_path, metadata = await loop.run_in_executor(
             executor, 
@@ -968,8 +589,6 @@ async def handle_message(client, message):
             # 2. Upload
             caption_file = f"{metadata.get('title', 'File')}\n\nUploaded by Bot"
             
-            # Upload to Telegram
-            # We upload to the user who requested it
             msg = await client.send_document(
                 chat_id=message.chat.id,
                 document=zip_path,
@@ -980,6 +599,11 @@ async def handle_message(client, message):
             
             # 3. Store
             code = await file_store.save_file(file_id, caption=caption_file)
+            global BOT_USERNAME
+            if not BOT_USERNAME:
+                 me = await client.get_me()
+                 BOT_USERNAME = me.username
+                 
             bot_link = f"https://t.me/{BOT_USERNAME}?start={code}"
             
             # 4. Reply with formatted post (Preview)
@@ -992,7 +616,6 @@ async def handle_message(client, message):
             caption = f"🔥 **{title}**\n\n"
             
             if description:
-                # Limit description length to avoid clutter
                 desc_preview = description[:300] + "..." if len(description) > 300 else description
                 caption += f"📝 **Description**:\n{desc_preview}\n\n"
             
@@ -1000,7 +623,7 @@ async def handle_message(client, message):
                 caption += f"🌐 **Demo**: [Live Preview]({demo_url})\n"
                 
             caption += "\n━━━━━━━━━━━━━━━━━━━━━\n"
-            caption += "� **Join Channel**: @freephplaravel\n"
+            caption += "🚀 **Join Channel**: @freephplaravel\n"
             caption += "━━━━━━━━━━━━━━━━━━━━━"
             
             if len(caption) > 1024:
@@ -1015,26 +638,22 @@ async def handle_message(client, message):
             # Send to User (Preview)
             sent_msg = None
             
-            # Logic for Image Selection (Local vs Remote)
             local_img = metadata.get('image_path')
             use_local_img = local_img and os.path.exists(local_img)
             
             if image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
-                # Valid remote image
                 sent_msg = await message.reply_photo(
                     photo=image_url,
                     caption=caption,
                     reply_markup=keyboard
                 )
             elif use_local_img:
-                # Fallback to local processed image (cropped/cleaned)
                 sent_msg = await message.reply_photo(
                     photo=local_img,
                     caption=caption,
                     reply_markup=keyboard
                 )
             else:
-                # Text fallback
                 sent_msg = await message.reply_text(
                     text=caption,
                     reply_markup=keyboard,
@@ -1045,9 +664,6 @@ async def handle_message(client, message):
             if should_autopost and sent_msg:
                 logging.info(f"Auto-posting to channel {CHANNEL_ID}")
                 try:
-                    # We can simply copy the message? No, copy doesn't work well with buttons sometimes if they are login urls etc, but here they are URL buttons.
-                    # Better to send fresh to ensure formatting.
-                    
                     if image_url and "codelist.cc" not in image_url and "codelist.cc" not in (metadata.get('original_url') or ""):
                         await client.send_photo(
                             chat_id=CHANNEL_ID,
@@ -1087,13 +703,7 @@ async def handle_message(client, message):
             except:
                 pass
 
-# Clean up the if __name__ block mess I made
 if __name__ == "__main__":
-    # We need to run the bot and the monitor
-    # Pyrogram app.run() is blocking.
-    # We can use idle()
-    from pyrogram import idle
-    
     async def main():
         await app.start()
         

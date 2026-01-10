@@ -11,6 +11,43 @@ from PIL import Image
 import io
 from curl_cffi import requests
 
+def search_codelist(query):
+    """
+    Search codelist.cc for a query and return the first result URL.
+    """
+    search_url = f"https://codelist.cc/?s={query}"
+    try:
+        r = requests.get(search_url, impersonate="chrome120", timeout=30)
+        if r.status_code != 200:
+            return None
+            
+        soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # Parse search results
+        # Usually they are in <div class="post-listing"> or similar.
+        # Let's find the first <article> or entry.
+        
+        # Codelist structure check:
+        # <h2 class="post-titleEntry"> <a href="...">Title</a> </h2>
+        
+        title_entry = soup.find('h2', class_='post-titleEntry')
+        if title_entry:
+            a_tag = title_entry.find('a', href=True)
+            if a_tag:
+                return a_tag['href']
+                
+        # Fallback for different themes or layouts
+        # Look for any post link that looks like a content page
+        for a in soup.find_all('a', href=True):
+             href = a['href']
+             if any(x in href for x in ['/scripts3/', '/plugins3/', '/mobile/', '/templates/']) and 'codelist.cc' in href:
+                 return href
+                 
+        return None
+    except Exception as e:
+        print(f"Search error: {e}")
+        return None
+
 # Configuration
 TOOLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
 COPYRIGHT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Copyright_files")
